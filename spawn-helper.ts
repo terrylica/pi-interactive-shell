@@ -13,7 +13,8 @@ export function ensureSpawnHelperExec(): void {
 	let pkgPath: string;
 	try {
 		pkgPath = require.resolve("node-pty/package.json");
-	} catch {
+	} catch (error) {
+		console.warn("interactive-shell: could not resolve node-pty package for spawn-helper permission check", error);
 		return;
 	}
 
@@ -30,8 +31,11 @@ export function ensureSpawnHelperExec(): void {
 			if ((stats.mode & 0o111) !== 0o111) {
 				chmodSync(target, mode);
 			}
-		} catch {
-			continue;
+		} catch (error) {
+			// ENOENT expected: single-arch installs only have one architecture path
+			if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) {
+				console.warn(`interactive-shell: failed to ensure spawn-helper is executable at ${target}`, error);
+			}
 		}
 	}
 }

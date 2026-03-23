@@ -6,6 +6,7 @@ export interface InteractiveShellConfig {
 	exitAutoCloseDelay: number;
 	overlayWidthPercent: number;
 	overlayHeightPercent: number;
+	focusShortcut: string;
 	scrollbackLines: number;
 	ansiReemit: boolean;
 	handoffPreviewEnabled: boolean;
@@ -35,6 +36,7 @@ const DEFAULT_CONFIG: InteractiveShellConfig = {
 	exitAutoCloseDelay: 10,
 	overlayWidthPercent: 95,
 	overlayHeightPercent: 60,
+	focusShortcut: "alt+`",
 	scrollbackLines: 5000,
 	ansiReemit: true,
 	handoffPreviewEnabled: true,
@@ -50,7 +52,7 @@ const DEFAULT_CONFIG: InteractiveShellConfig = {
 	completionNotifyLines: 50,
 	completionNotifyMaxChars: 5000,
 	// Hands-free mode defaults
-	handsFreeUpdateMode: "on-quiet" as const,
+	handsFreeUpdateMode: "on-quiet",
 	handsFreeUpdateInterval: 60000,
 	handsFreeQuietThreshold: 8000,
 	autoExitGracePeriod: 15000,
@@ -71,7 +73,7 @@ export function loadConfig(cwd: string): InteractiveShellConfig {
 		try {
 			globalConfig = JSON.parse(readFileSync(globalPath, "utf-8"));
 		} catch (error) {
-			console.error(`Warning: Could not parse ${globalPath}: ${String(error)}`);
+			console.error(`Warning: Could not parse ${globalPath}:`, error);
 		}
 	}
 
@@ -79,7 +81,7 @@ export function loadConfig(cwd: string): InteractiveShellConfig {
 		try {
 			projectConfig = JSON.parse(readFileSync(projectPath, "utf-8"));
 		} catch (error) {
-			console.error(`Warning: Could not parse ${projectPath}: ${String(error)}`);
+			console.error(`Warning: Could not parse ${projectPath}:`, error);
 		}
 	}
 
@@ -91,6 +93,7 @@ export function loadConfig(cwd: string): InteractiveShellConfig {
 		overlayWidthPercent: clampPercent(merged.overlayWidthPercent, DEFAULT_CONFIG.overlayWidthPercent),
 		// Height: 20-90% range (default 60%)
 		overlayHeightPercent: clampInt(merged.overlayHeightPercent, DEFAULT_CONFIG.overlayHeightPercent, 20, 90),
+		focusShortcut: resolveShortcut(merged.focusShortcut, DEFAULT_CONFIG.focusShortcut),
 		scrollbackLines: clampInt(merged.scrollbackLines, DEFAULT_CONFIG.scrollbackLines, 200, 50000),
 		ansiReemit: merged.ansiReemit !== false,
 		handoffPreviewEnabled: merged.handoffPreviewEnabled !== false,
@@ -166,4 +169,10 @@ function clampInt(value: number | undefined, fallback: number, min: number, max:
 	if (typeof value !== "number" || Number.isNaN(value)) return fallback;
 	const rounded = Math.trunc(value);
 	return Math.min(max, Math.max(min, rounded));
+}
+
+function resolveShortcut(value: string | undefined, fallback: string): string {
+	if (typeof value !== "string") return fallback;
+	const trimmed = value.trim();
+	return trimmed.length > 0 ? trimmed : fallback;
 }

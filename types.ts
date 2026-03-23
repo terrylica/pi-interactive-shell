@@ -37,7 +37,7 @@ export interface InteractiveShellResult {
 }
 
 export interface HandsFreeUpdate {
-	status: "running" | "user-takeover" | "exited" | "killed";
+	status: "running" | "user-takeover" | "exited" | "killed" | "agent-resumed";
 	sessionId: string;
 	runtime: number;
 	tail: string[];
@@ -81,9 +81,10 @@ export interface InteractiveShellOptions {
 	streamingMode?: boolean;
 	// Existing PTY session (for attach flow -- skip creating a new PTY)
 	existingSession?: import("./pty-session.js").PtyTerminalSession;
+	onUnfocus?: () => void;
 }
 
-export type DialogChoice = "kill" | "background" | "transfer" | "cancel";
+export type DialogChoice = "kill" | "background" | "transfer" | "cancel" | "return-to-agent";
 export type OverlayState = "running" | "exited" | "detach-dialog" | "hands-free";
 
 // UI constants
@@ -99,6 +100,14 @@ export function formatDuration(ms: number): string {
 	if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
 	const hours = Math.floor(minutes / 60);
 	return `${hours}h ${minutes % 60}m`;
+}
+
+/** Format a key shortcut string for display (capitalize modifier names) */
+export function formatShortcut(shortcut: string): string {
+	return shortcut
+		.replace(/ctrl/gi, "Ctrl")
+		.replace(/shift/gi, "Shift")
+		.replace(/alt/gi, "Alt");
 }
 
 /** Format milliseconds with ms precision for shorter durations */

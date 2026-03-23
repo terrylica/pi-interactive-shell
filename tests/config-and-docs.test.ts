@@ -24,8 +24,16 @@ describe("config + docs parity", () => {
 		const projectPath = join(project, ".pi", "interactive-shell.json");
 		mkdirSync(agentDir, { recursive: true });
 		mkdirSync(join(project, ".pi"), { recursive: true });
-		writeFileSync(globalPath, JSON.stringify({ handsFreeQuietThreshold: 999999, overlayWidthPercent: 5 }), { encoding: "utf-8" });
-		writeFileSync(projectPath, JSON.stringify({ autoExitGracePeriod: 1, overlayHeightPercent: 150 }), { encoding: "utf-8" });
+		writeFileSync(globalPath, JSON.stringify({
+			handsFreeQuietThreshold: 999999,
+			overlayWidthPercent: 5,
+			focusShortcut: "alt+f",
+		}), { encoding: "utf-8" });
+		writeFileSync(projectPath, JSON.stringify({
+			autoExitGracePeriod: 1,
+			overlayHeightPercent: 150,
+			focusShortcut: "   ",
+		}), { encoding: "utf-8" });
 
 		const { loadConfig } = await loadConfigModule(agentDir);
 		const config = loadConfig(project);
@@ -33,6 +41,7 @@ describe("config + docs parity", () => {
 		expect(config.overlayWidthPercent).toBe(10);
 		expect(config.autoExitGracePeriod).toBe(5000);
 		expect(config.overlayHeightPercent).toBe(90);
+		expect(config.focusShortcut).toBe("alt+`");
 
 		rmSync(root, { recursive: true, force: true });
 	});
@@ -47,6 +56,11 @@ describe("config + docs parity", () => {
 
 		expect(defaults.handsFreeQuietThreshold).toBe(8000);
 		expect(defaults.autoExitGracePeriod).toBe(15000);
+		expect(defaults.focusShortcut).toBe("alt+`");
+		expect(readme).toContain(`"focusShortcut": "${defaults.focusShortcut}"`);
+		expect(readme).toContain("Toggle focus between overlay and main chat");
+		expect(readme).toContain("/spawn fork");
+		expect(readme).toContain("Alt+Shift+P");
 		expect(readme).toContain(`"handsFreeQuietThreshold": ${defaults.handsFreeQuietThreshold}`);
 		expect(readme).toContain(`"autoExitGracePeriod": ${defaults.autoExitGracePeriod}`);
 		expect(readme).toContain(`Dispatch defaults \`autoExitOnQuiet: true\` — the session gets a 15s startup grace period`);

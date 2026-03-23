@@ -125,6 +125,7 @@ export class HeadlessDispatchMonitor {
 				truncated: result.lines.length < result.totalLinesInBuffer || result.truncatedByChars,
 			};
 		} catch {
+			// Session terminal may already be disposed during completion — safe to return empty
 			return { lines: [], totalLines: 0, truncated: false };
 		}
 	}
@@ -175,7 +176,11 @@ export class HeadlessDispatchMonitor {
 
 	private triggerCompleteCallbacks(): void {
 		for (const cb of this.completeCallbacks) {
-			try { cb(); } catch { /* ignore */ }
+			try {
+				cb();
+			} catch (error) {
+				console.error("interactive-shell: headless completion callback error:", error);
+			}
 		}
 		this.completeCallbacks = [];
 	}

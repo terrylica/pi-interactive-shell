@@ -40,6 +40,9 @@ export function buildHandsFreeUpdateMessage(update: HandsFreeUpdate): { content:
 		case "user-takeover":
 			statusLine = `Session ${update.sessionId}: user took over (${formatDurationMs(update.runtime)})`;
 			break;
+		case "agent-resumed":
+			statusLine = `Session ${update.sessionId}: agent resumed monitoring (${formatDurationMs(update.runtime)})`;
+			break;
 		default:
 			statusLine = `Session ${update.sessionId} update (${formatDurationMs(update.runtime)})`;
 	}
@@ -93,7 +96,7 @@ export function buildIdlePromptWarning(command: string, reason: string | undefin
 
 function buildDispatchStatusLine(sessionId: string, info: HeadlessCompletionInfo, duration: string): string {
 	if (info.timedOut) return `Session ${sessionId} timed out (${duration}).`;
-	if (info.cancelled) return `Session ${sessionId} completed (${duration}).`;
+	if (info.cancelled) return `Session ${sessionId} was killed (${duration}).`;
 	if (info.exitCode === 0) return `Session ${sessionId} completed successfully (${duration}).`;
 	return `Session ${sessionId} exited with code ${info.exitCode} (${duration}).`;
 }

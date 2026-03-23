@@ -16,6 +16,14 @@ describe("notification utilities", () => {
 		expect(text).toContain('Attach to review full output: interactive_shell({ attach: "calm-reef" })');
 	});
 
+	it("formats cancelled dispatch notifications as killed", () => {
+		const text = buildDispatchNotification("calm-reef", {
+			exitCode: null,
+			cancelled: true,
+		}, "30s");
+		expect(text).toContain("Session calm-reef was killed (30s).");
+	});
+
 	it("formats final result notifications", () => {
 		const text = buildResultNotification("calm-reef", {
 			exitCode: 1,

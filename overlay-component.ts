@@ -13,8 +13,8 @@ import {
 	type OverlayState,
 	HEADER_LINES,
 	FOOTER_LINES_COMPACT,
-	FOOTER_LINES_DIALOG,
 	formatDuration,
+	formatShortcut,
 } from "./types.js";
 import { captureCompletionOutput, captureTransferOutput, maybeBuildHandoffPreview, maybeWriteHandoffSnapshot } from "./handoff-utils.js";
 import { createSessionQueryState, getSessionOutput } from "./session-query.js";
@@ -249,8 +249,8 @@ export class InteractiveShellOverlay implements Component, Focusable {
 		for (const callback of this.completeCallbacks) {
 			try {
 				callback();
-			} catch {
-				// Ignore errors in callbacks
+			} catch (error) {
+				console.error("interactive-shell: completion callback error:", error);
 			}
 		}
 		this.completeCallbacks = [];
@@ -295,35 +295,37 @@ export class InteractiveShellOverlay implements Component, Focusable {
 	}
 
 	private startHandsFreeUpdates(): void {
-		// Send initial update after a short delay (let process start)
-		this.handsFreeInitialTimeout = setTimeout(() => {
-			this.handsFreeInitialTimeout = null;
-			if (this.state === "hands-free") {
-				this.emitHandsFreeUpdate();
-			}
-		}, 2000);
+		if (this.options.onHandsFreeUpdate) {
+			// Send initial update after a short delay (let process start)
+			this.handsFreeInitialTimeout = setTimeout(() => {
+				this.handsFreeInitialTimeout = null;
+				if (this.state === "hands-free") {
+					this.emitHandsFreeUpdate();
+				}
+			}, 2000);
+
+			this.handsFreeInterval = setInterval(() => {
+				if (this.state === "hands-free") {
+					if (this.updateMode === "on-quiet") {
+						if (this.hasUnsentData) {
+							this.emitHandsFreeUpdate();
+							this.hasUnsentData = false;
+							if (this.options.autoExitOnQuiet) {
+								this.resetQuietTimer();
+							} else {
+								this.stopQuietTimer();
+							}
+						}
+					} else {
+						this.emitHandsFreeUpdate();
+					}
+				}
+			}, this.currentUpdateInterval);
+		}
 
 		if (this.options.autoExitOnQuiet) {
 			this.resetQuietTimer();
 		}
-
-		this.handsFreeInterval = setInterval(() => {
-			if (this.state === "hands-free") {
-				if (this.updateMode === "on-quiet") {
-					if (this.hasUnsentData && this.options.onHandsFreeUpdate) {
-						this.emitHandsFreeUpdate();
-						this.hasUnsentData = false;
-						if (this.options.autoExitOnQuiet) {
-							this.resetQuietTimer();
-						} else {
-							this.stopQuietTimer();
-						}
-					}
-				} else {
-					this.emitHandsFreeUpdate();
-				}
-			}
-		}, this.currentUpdateInterval);
 	}
 
 	private resetQuietTimer(): void {
@@ -390,7 +392,7 @@ export class InteractiveShellOverlay implements Component, Focusable {
 			this.handsFreeInterval = setInterval(() => {
 				if (this.state === "hands-free") {
 					if (this.updateMode === "on-quiet") {
-						if (this.hasUnsentData && this.options.onHandsFreeUpdate) {
+						if (this.hasUnsentData) {
 							this.emitHandsFreeUpdate();
 							this.hasUnsentData = false;
 							if (this.options.autoExitOnQuiet) {
@@ -528,6 +530,62 @@ export class InteractiveShellOverlay implements Component, Focusable {
 		}
 
 		this.tui.requestRender();
+	}
+
+	private returnToHandsFree(): void {
+		if (!this.userTookOver || !this.sessionId || this.session.exited) return;
+
+		this.state = "hands-free";
+		this.userTookOver = false;
+
+		// Re-register if streaming mode previously released the session
+		if (this.sessionUnregistered) {
+			sessionManager.registerActive({
+				id: this.sessionId,
+				command: this.options.command,
+				reason: this.options.reason,
+				write: (data) => this.session.write(data),
+				kill: () => this.killSession(),
+				background: () => this.backgroundSession(),
+				getOutput: (options) => this.getOutputSinceLastCheck(options),
+				getStatus: () => this.getSessionStatus(),
+				getRuntime: () => this.getRuntime(),
+				getResult: () => this.getCompletionResult(),
+				setUpdateInterval: (intervalMs) => this.setUpdateInterval(intervalMs),
+				setQuietThreshold: (thresholdMs) => this.setQuietThreshold(thresholdMs),
+				onComplete: (callback) => this.registerCompleteCallback(callback),
+			});
+			this.sessionUnregistered = false;
+		}
+
+		if (this.options.onHandsFreeUpdate) {
+			this.options.onHandsFreeUpdate({
+				status: "agent-resumed",
+				sessionId: this.sessionId,
+				runtime: Date.now() - this.startTime,
+				tail: [],
+				tailTruncated: false,
+				totalCharsSent: this.totalCharsSent,
+				budgetExhausted: this.budgetExhausted,
+			});
+		}
+
+		this.startHandsFreeUpdates();
+		this.tui.requestRender();
+	}
+
+	private getDialogOptions(): Array<{ key: DialogChoice; label: string }> {
+		const options: Array<{ key: DialogChoice; label: string }> = [];
+		if (this.userTookOver && !this.session.exited) {
+			options.push({ key: "return-to-agent", label: "Return control to agent" });
+		}
+		options.push(
+			{ key: "transfer", label: "Transfer output to agent" },
+			{ key: "background", label: "Run in background" },
+			{ key: "kill", label: "Kill process" },
+			{ key: "cancel", label: "Cancel (return to session)" },
+		);
+		return options;
 	}
 
 	/** Capture output for dispatch completion notifications */
@@ -757,6 +815,17 @@ export class InteractiveShellOverlay implements Component, Focusable {
 			return;
 		}
 
+		if (matchesKey(data, this.config.focusShortcut)) {
+			this.options.onUnfocus?.();
+			return;
+		}
+
+		// Ctrl+G: Return to agent monitoring (only active during takeover)
+		if (this.userTookOver && this.state === "running" && matchesKey(data, "ctrl+g")) {
+			this.returnToHandsFree();
+			return;
+		}
+
 		// Ctrl+T: Quick transfer - capture output and close (works in all states including "exited")
 		if (matchesKey(data, "ctrl+t")) {
 			// If in hands-free mode, trigger takeover first (notifies agent)
@@ -790,7 +859,7 @@ export class InteractiveShellOverlay implements Component, Focusable {
 				this.triggerUserTakeover();
 			}
 			this.state = "detach-dialog";
-			this.dialogSelection = "transfer";
+			this.dialogSelection = (this.userTookOver && !this.session.exited) ? "return-to-agent" : "transfer";
 			this.tui.requestRender();
 			return;
 		}
@@ -824,17 +893,21 @@ export class InteractiveShellOverlay implements Component, Focusable {
 		}
 
 		if (matchesKey(data, "up") || matchesKey(data, "down")) {
-			const options: DialogChoice[] = ["transfer", "background", "kill", "cancel"];
-			const currentIdx = options.indexOf(this.dialogSelection);
+			const options = this.getDialogOptions();
+			const keys = options.map(o => o.key);
+			const currentIdx = keys.indexOf(this.dialogSelection);
 			const direction = matchesKey(data, "up") ? -1 : 1;
-			const newIdx = (currentIdx + direction + options.length) % options.length;
-			this.dialogSelection = options[newIdx]!;
+			const newIdx = (currentIdx + direction + keys.length) % keys.length;
+			this.dialogSelection = keys[newIdx]!;
 			this.tui.requestRender();
 			return;
 		}
 
 		if (matchesKey(data, "enter")) {
 			switch (this.dialogSelection) {
+				case "return-to-agent":
+					this.returnToHandsFree();
+					break;
 				case "transfer":
 					this.finishWithTransfer();
 					break;
@@ -855,7 +928,8 @@ export class InteractiveShellOverlay implements Component, Focusable {
 	render(width: number): string[] {
 		width = Math.max(4, width);
 		const th = this.theme;
-		const border = (s: string) => th.fg("border", s);
+		const borderColor = this.focused ? "border" : "borderMuted";
+		const border = (s: string) => th.fg(borderColor, s);
 		const accent = (s: string) => th.fg("accent", s);
 		const dim = (s: string) => th.fg("dim", s);
 		const warning = (s: string) => th.fg("warning", s);
@@ -890,8 +964,8 @@ export class InteractiveShellOverlay implements Component, Focusable {
 			hint = `🤖 Hands-free (${elapsed}) • Type anything to take over`;
 		} else if (this.userTookOver) {
 			hint = sanitizedReason
-				? `You took over • ${sanitizedReason} • Ctrl+B background`
-				: "You took over • Ctrl+B background";
+				? `You took over • Ctrl+G return to agent • ${sanitizedReason}`
+				: "You took over • Ctrl+G return to agent";
 		} else {
 			hint = sanitizedReason
 				? `Ctrl+B background • ${sanitizedReason}`
@@ -900,22 +974,25 @@ export class InteractiveShellOverlay implements Component, Focusable {
 		lines.push(row(dim(truncateToWidth(hint, innerWidth, "..."))));
 		lines.push(border("├" + "─".repeat(width - 2) + "┤"));
 
+		const dialogOptions = this.state === "detach-dialog" ? this.getDialogOptions() : [];
 		const overlayHeight = Math.floor((this.tui.terminal.rows * this.config.overlayHeightPercent) / 100);
-		const footerHeight = this.state === "detach-dialog" ? FOOTER_LINES_DIALOG : FOOTER_LINES_COMPACT;
+		const footerHeight = this.state === "detach-dialog" ? dialogOptions.length + 2 : FOOTER_LINES_COMPACT;
 		const chrome = HEADER_LINES + footerHeight + 2;
-		const termRows = Math.max(3, overlayHeight - chrome);
+		const termRows = Math.max(0, overlayHeight - chrome);
 
-		if (innerWidth !== this.lastWidth || termRows !== this.lastHeight) {
-			this.session.resize(innerWidth, termRows);
-			this.lastWidth = innerWidth;
-			this.lastHeight = termRows;
-			// After resize, ensure we're at the bottom to prevent flash to top
-			this.session.scrollToBottom();
-		}
+		if (termRows > 0) {
+			if (innerWidth !== this.lastWidth || termRows !== this.lastHeight) {
+				this.session.resize(innerWidth, termRows);
+				this.lastWidth = innerWidth;
+				this.lastHeight = termRows;
+				// After resize, ensure we're at the bottom to prevent flash to top
+				this.session.scrollToBottom();
+			}
 
-		const viewportLines = this.session.getViewportLines({ ansi: this.config.ansiReemit });
-		for (const line of viewportLines) {
-			lines.push(row(truncateToWidth(line, innerWidth, "")));
+			const viewportLines = this.session.getViewportLines({ ansi: this.config.ansiReemit });
+			for (const line of viewportLines) {
+				lines.push(row(truncateToWidth(line, innerWidth, "")));
+			}
 		}
 
 		if (this.session.isScrolledUp()) {
@@ -935,16 +1012,11 @@ export class InteractiveShellOverlay implements Component, Focusable {
 		}
 
 		const footerLines: string[] = [];
+		const focusHint = `${formatShortcut(this.config.focusShortcut)} ${this.focused ? "unfocus" : "focus shell"}`;
 
 		if (this.state === "detach-dialog") {
 			footerLines.push(row(accent("Session actions:")));
-			const opts: Array<{ key: DialogChoice; label: string }> = [
-				{ key: "transfer", label: "Transfer output to agent" },
-				{ key: "background", label: "Run in background" },
-				{ key: "kill", label: "Kill process" },
-				{ key: "cancel", label: "Cancel (return to session)" },
-			];
-			for (const opt of opts) {
+			for (const opt of dialogOptions) {
 				const sel = this.dialogSelection === opt.key;
 				footerLines.push(row((sel ? accent("▶ ") : "  ") + (sel ? accent(opt.label) : opt.label)));
 			}
@@ -955,11 +1027,19 @@ export class InteractiveShellOverlay implements Component, Focusable {
 					? th.fg("success", "✓ Exited successfully")
 					: warning(`✗ Exited with code ${this.session.exitCode}`);
 			footerLines.push(row(exitMsg));
-			footerLines.push(row(dim(`Closing in ${this.exitCountdown}s... (any key to close)`)));
+			footerLines.push(row(dim(`Closing in ${this.exitCountdown}s... (any key to close) • ${focusHint}`)));
 		} else if (this.state === "hands-free") {
-			footerLines.push(row(dim("🤖 Agent controlling • Type to take over • Ctrl+T transfer • Ctrl+B background")));
+			if (this.focused) {
+				footerLines.push(row(dim(`🤖 Agent controlling • Type to take over • Ctrl+T transfer • Ctrl+B background • ${focusHint}`)));
+			} else {
+				footerLines.push(row(dim(`🤖 Agent controlling • ${focusHint}`)));
+			}
+		} else if (!this.focused) {
+			footerLines.push(row(dim(focusHint)));
+		} else if (this.userTookOver) {
+			footerLines.push(row(dim(`Ctrl+G agent • Ctrl+T transfer • Ctrl+B background • Ctrl+Q menu • ${focusHint}`)));
 		} else {
-			footerLines.push(row(dim("Ctrl+T transfer • Ctrl+B background • Ctrl+Q menu • Shift+Up/Down scroll")));
+			footerLines.push(row(dim(`Ctrl+T transfer • Ctrl+B background • Ctrl+Q menu • Shift+Up/Down scroll • ${focusHint}`)));
 		}
 
 		while (footerLines.length < footerHeight) {

@@ -146,7 +146,11 @@ export class ShellSessionManager {
 
 	private notifyChange(): void {
 		for (const listener of this.changeListeners) {
-			try { listener(); } catch { /* ignore */ }
+			try {
+				listener();
+			} catch (error) {
+				console.error("interactive-shell: change listener error:", error);
+			}
 		}
 	}
 
@@ -337,9 +341,10 @@ export class ShellSessionManager {
 				session.kill();
 				// Only release ID if kill succeeded - let natural cleanup handle failures
 				// The session's exit handler will call unregisterActive() which releases the ID
-			} catch {
-				// Session may already be dead - still safe to release since no process running
-				releaseSessionId(id);
+			} catch (error) {
+				console.error(`interactive-shell: failed to kill active session ${id} during shutdown`, error);
+				// Keep the slug reservation when kill fails so a potentially still-running
+				// session cannot collide with a newly generated ID.
 			}
 		}
 		// Don't clear immediately - let unregisterActive() handle cleanup as sessions exit

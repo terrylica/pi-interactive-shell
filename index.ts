@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { InteractiveShellOverlay } from "./overlay-component.js";
 import { ReattachOverlay } from "./reattach-overlay.js";
 import { PtyTerminalSession } from "./pty-session.js";
@@ -24,15 +24,18 @@ function makeMonitorCompletionCallback(
 	startTime: number,
 ): (info: HeadlessCompletionInfo) => void {
 	return (info) => {
-		const duration = formatDuration(Date.now() - startTime);
-		const content = buildDispatchNotification(id, info, duration);
-		pi.sendMessage({
-			customType: "interactive-shell-transfer",
-			content,
-			display: true,
-			details: { sessionId: id, duration, ...info },
-		}, { triggerTurn: true });
-		pi.events.emit("interactive-shell:transfer", { sessionId: id, ...info });
+		const wasAgentHandled = coordinator.consumeAgentHandledCompletion(id);
+		if (!wasAgentHandled) {
+			const duration = formatDuration(Date.now() - startTime);
+			const content = buildDispatchNotification(id, info, duration);
+			pi.sendMessage({
+				customType: "interactive-shell-transfer",
+				content,
+				display: true,
+				details: { sessionId: id, duration, ...info },
+			}, { triggerTurn: true });
+			pi.events.emit("interactive-shell:transfer", { sessionId: id, ...info });
+		}
 		sessionManager.unregisterActive(id, false);
 		coordinator.deleteMonitor(id);
 		sessionManager.scheduleCleanup(id, 5 * 60 * 1000);
@@ -85,7 +88,155 @@ function makeNonBlockingUpdateHandler(pi: ExtensionAPI): (update: HandsFreeUpdat
 	};
 }
 
+function emitTransferredOutput(
+	pi: ExtensionAPI,
+	result: InteractiveShellResult,
+	fallbackSessionId?: string,
+): void {
+	if (!result.transferred) return;
+	const sessionId = result.sessionId ?? fallbackSessionId;
+	const truncatedNote = result.transferred.truncated
+		? ` (truncated from ${result.transferred.totalLines} total lines)`
+		: "";
+	const prefix = sessionId
+		? `Session ${sessionId} output transferred`
+		: "Interactive shell output transferred";
+	const content = `${prefix} (${result.transferred.lines.length} lines${truncatedNote}):\n\n${result.transferred.lines.join("\n")}`;
+	pi.sendMessage({
+		customType: "interactive-shell-transfer",
+		content,
+		display: true,
+		details: {
+			sessionId,
+			transferred: result.transferred,
+			exitCode: result.exitCode,
+			signal: result.signal,
+		},
+	}, { triggerTurn: true });
+	pi.events.emit("interactive-shell:transfer", {
+		sessionId,
+		transferred: result.transferred,
+		exitCode: result.exitCode,
+		signal: result.signal,
+	});
+}
+
+type SpawnMode = "fresh" | "fork";
+
+const SPAWN_SHORTCUT = "alt+shift+p";
+
+function parseSpawnMode(args: string): SpawnMode | undefined {
+	const normalized = args.trim().toLowerCase();
+	switch (normalized) {
+		case "":
+		case "fresh":
+		case "new":
+			return "fresh";
+		case "fork":
+			return "fork";
+		default:
+			return undefined;
+	}
+}
+
+function shellQuote(value: string): string {
+	if (process.platform === "win32") {
+		return `"${value.replace(/"/g, '""')}"`;
+	}
+	return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function buildSpawnPiCommand(mode: SpawnMode, getSessionFile: () => string | undefined):
+	| { ok: true; command: string; reason: string }
+	| { ok: false; error: string } {
+	if (mode === "fork") {
+		const sourceSessionFile = getSessionFile();
+		if (!sourceSessionFile) {
+			return { ok: false, error: "Cannot fork the current session because it is not persisted (likely --no-session mode)." };
+		}
+		return {
+			ok: true,
+			command: `pi --fork ${shellQuote(sourceSessionFile)}`,
+			reason: "spawn pi (fork current session)",
+		};
+	}
+
+	return {
+		ok: true,
+		command: "pi",
+		reason: "spawn pi (fresh session)",
+	};
+}
+
 export default function interactiveShellExtension(pi: ExtensionAPI) {
+	const startupConfig = loadConfig(process.cwd());
+	const loadRuntimeConfig = (cwd: string): InteractiveShellConfig => ({
+		...loadConfig(cwd),
+		focusShortcut: startupConfig.focusShortcut,
+	});
+	const disposeStaleMonitor = (id: string, monitor: HeadlessDispatchMonitor | undefined): void => {
+		if (!monitor || monitor.disposed) return;
+		coordinator.disposeMonitor(id);
+		sessionManager.unregisterActive(id, false);
+	};
+	const createOverlayUiOptions = (config: InteractiveShellConfig) => ({
+		overlay: true,
+		overlayOptions: {
+			width: `${config.overlayWidthPercent}%`,
+			maxHeight: `${config.overlayHeightPercent}%`,
+			anchor: "center",
+			margin: 1,
+			nonCapturing: true,
+		},
+		onHandle: (handle) => {
+			coordinator.setOverlayHandle(handle);
+			handle.focus();
+		},
+	});
+	const spawnPiOverlay = async (ctx: ExtensionContext, mode: SpawnMode): Promise<void> => {
+		if (coordinator.isOverlayOpen()) {
+			ctx.ui.notify("An overlay is already open. Close it first.", "error");
+			return;
+		}
+
+		const spawn = buildSpawnPiCommand(mode, () => ctx.sessionManager.getSessionFile());
+		if (!spawn.ok) {
+			ctx.ui.notify(spawn.error, "error");
+			return;
+		}
+
+		const config = loadRuntimeConfig(ctx.cwd);
+		if (!coordinator.beginOverlay()) {
+			ctx.ui.notify("An overlay is already open. Close it first.", "error");
+			return;
+		}
+		try {
+			const result = await ctx.ui.custom<InteractiveShellResult>(
+				(tui, theme, _kb, done) =>
+					new InteractiveShellOverlay(tui, theme, {
+						command: spawn.command,
+						cwd: ctx.cwd,
+						reason: spawn.reason,
+						onUnfocus: () => coordinator.unfocusOverlay(),
+					}, config, done),
+				createOverlayUiOptions(config),
+			);
+			emitTransferredOutput(pi, result);
+		} finally {
+			coordinator.endOverlay();
+		}
+	};
+	pi.registerShortcut(startupConfig.focusShortcut, {
+		description: "Focus interactive shell overlay",
+		handler: () => {
+			coordinator.focusOverlay();
+		},
+	});
+	pi.registerShortcut(SPAWN_SHORTCUT, {
+		description: "Spawn pi in a fresh interactive shell overlay",
+		handler: (ctx) => spawnPiOverlay(ctx, "fresh"),
+	});
+
 	pi.on("session_start", (_event, ctx) => {
 		coordinator.replaceBackgroundWidgetCleanup(setupBackgroundWidget(ctx, sessionManager));
 	});
@@ -152,8 +303,8 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 
 				// Kill
 				if (kill) {
-					const hMonitor = coordinator.getMonitor(sessionId);
-					if (!hMonitor || hMonitor.disposed) {
+					const alreadyCompleted = Boolean(session.getResult());
+					if (!alreadyCompleted) {
 						coordinator.markAgentHandledCompletion(sessionId);
 					}
 					const { output, truncated, totalBytes, totalLines, hasMore } = session.getOutput({ skipRateLimit: true, lines: outputLines, maxChars: outputMaxChars, offset: outputOffset, drain, incremental });
@@ -339,6 +490,7 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 				const monitor = coordinator.getMonitor(attach);
 				const bgSession = sessionManager.take(attach);
 				if (!bgSession) {
+					disposeStaleMonitor(attach, monitor);
 					return {
 						content: [{ type: "text", text: `Background session not found: ${attach}` }],
 						isError: true,
@@ -346,6 +498,7 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 				}
 
 				const restoreAttachSession = () => {
+					bgSession.session.setEventHandlers({});
 					sessionManager.restore(bgSession, { noAutoCleanup: Boolean(monitor && !monitor.disposed) });
 					return {
 						releaseId: false,
@@ -361,7 +514,7 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 					};
 				}
 
-				const config = loadConfig(cwd ?? ctx.cwd);
+				const config = loadRuntimeConfig(cwd ?? ctx.cwd);
 				const reattachSessionId = attach;
 				const isNonBlocking = mode === "hands-free" || mode === "dispatch";
 				const attachStartTime = bgSession.startedAt.getTime();
@@ -387,6 +540,7 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 									? handsFree?.autoExitOnQuiet !== false
 									: handsFree?.autoExitOnQuiet === true,
 								autoExitGracePeriod: handsFree?.gracePeriod ?? config.autoExitGracePeriod,
+								onUnfocus: () => coordinator.unfocusOverlay(),
 								onHandsFreeUpdate: mode === "hands-free"
 									? makeNonBlockingUpdateHandler(pi)
 									: undefined,
@@ -398,15 +552,7 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 								handoffSnapshotMaxChars: handoffSnapshot?.maxChars,
 								timeout,
 							}, config, done),
-						{
-							overlay: true,
-							overlayOptions: {
-								width: `${config.overlayWidthPercent}%`,
-								maxHeight: `${config.overlayHeightPercent}%`,
-								anchor: "center",
-								margin: 1,
-							},
-						},
+						createOverlayUiOptions(config),
 					);
 				} catch (error) {
 					coordinator.endOverlay();
@@ -446,6 +592,12 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 					if (!result.backgrounded) {
 						monitor.handleExternalCompletion(result.exitCode, result.signal, result.completionOutput);
 						coordinator.deleteMonitor(attach);
+					} else {
+						const monitoredId = result.backgroundId ?? attach;
+						const monitoredSession = sessionManager.take(monitoredId);
+						if (monitoredSession) {
+							sessionManager.restore(monitoredSession, { noAutoCleanup: true });
+						}
 					}
 				} else if (result.backgrounded) {
 					sessionManager.restartAutoCleanup(attach);
@@ -508,7 +660,7 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 			}
 
 			const effectiveCwd = cwd ?? ctx.cwd;
-			const config = loadConfig(effectiveCwd);
+			const config = loadRuntimeConfig(effectiveCwd);
 			const isNonBlocking = mode === "hands-free" || mode === "dispatch";
 
 			// ── Branch 4a: Headless dispatch ──
@@ -593,6 +745,7 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 									? handsFree?.autoExitOnQuiet !== false
 									: handsFree?.autoExitOnQuiet === true,
 								autoExitGracePeriod: handsFree?.gracePeriod ?? config.autoExitGracePeriod,
+								onUnfocus: () => coordinator.unfocusOverlay(),
 								onHandsFreeUpdate: mode === "hands-free"
 									? makeNonBlockingUpdateHandler(pi)
 									: undefined,
@@ -604,15 +757,7 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 								handoffSnapshotMaxChars: handoffSnapshot?.maxChars,
 								timeout,
 							}, config, done),
-						{
-							overlay: true,
-							overlayOptions: {
-								width: `${config.overlayWidthPercent}%`,
-								maxHeight: `${config.overlayHeightPercent}%`,
-								anchor: "center",
-								margin: 1,
-							},
-						},
+						createOverlayUiOptions(config),
 					);
 				} catch (error) {
 					coordinator.endOverlay();
@@ -672,6 +817,7 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 							handsFreeMaxTotalChars: handsFree?.maxTotalChars,
 							autoExitOnQuiet: handsFree?.autoExitOnQuiet,
 							autoExitGracePeriod: handsFree?.gracePeriod ?? config.autoExitGracePeriod,
+							onUnfocus: () => coordinator.unfocusOverlay(),
 							streamingMode: mode === "hands-free",
 							onHandsFreeUpdate: mode === "hands-free"
 								? (update) => {
@@ -679,6 +825,9 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 									switch (update.status) {
 										case "user-takeover":
 											statusText = `User took over session ${update.sessionId}`;
+											break;
+										case "agent-resumed":
+											statusText = `Agent resumed monitoring session ${update.sessionId}`;
 											break;
 										case "exited":
 											statusText = `Session ${update.sessionId} exited`;
@@ -717,21 +866,25 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 							handoffSnapshotMaxChars: handoffSnapshot?.maxChars,
 							timeout,
 						}, config, done),
-					{
-						overlay: true,
-						overlayOptions: {
-							width: `${config.overlayWidthPercent}%`,
-							maxHeight: `${config.overlayHeightPercent}%`,
-							anchor: "center",
-							margin: 1,
-						},
-					},
+					createOverlayUiOptions(config),
 				);
 			} finally {
 				coordinator.endOverlay();
 			}
 
 			return { content: [{ type: "text", text: summarizeInteractiveResult(command, result, timeout, reason) }], details: result };
+		},
+	});
+
+	pi.registerCommand("spawn", {
+		description: "Spawn pi in an interactive shell overlay (/spawn [fresh|fork])",
+		handler: async (args, ctx) => {
+			const mode = parseSpawnMode(args);
+			if (!mode) {
+				ctx.ui.notify("Usage: /spawn [fresh|fork]", "error");
+				return;
+			}
+			await spawnPiOverlay(ctx, mode);
 		},
 	});
 
@@ -757,43 +910,64 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 					const sanitizedCommand = s.command.replace(/\s+/g, " ").trim();
 					const sanitizedReason = s.reason?.replace(/\s+/g, " ").trim();
 					const r = sanitizedReason ? ` \u2022 ${sanitizedReason}` : "";
-					return `${s.id} - ${sanitizedCommand}${r} (${status}, ${duration})`;
+					return {
+						id: s.id,
+						label: `${s.id} - ${sanitizedCommand}${r} (${status}, ${duration})`,
+					};
 				});
-				const choice = await ctx.ui.select("Background Sessions", options);
+				const choice = await ctx.ui.select("Background Sessions", options.map((o) => o.label));
 				if (!choice) return;
-				targetId = choice.split(" - ")[0]!;
+				targetId = options.find((o) => o.label === choice)!.id;
 			}
 
 			const monitor = coordinator.getMonitor(targetId);
-
-			const session = sessionManager.get(targetId);
-			if (!session) {
-				ctx.ui.notify(`Session not found: ${targetId}`, "error");
-				return;
-			}
-
-			const config = loadConfig(ctx.cwd);
 			if (!coordinator.beginOverlay()) {
 				ctx.ui.notify("An overlay is already open. Close it first.", "error");
 				return;
 			}
+
+			const session = sessionManager.get(targetId);
+			if (!session) {
+				disposeStaleMonitor(targetId, monitor);
+				coordinator.endOverlay();
+				ctx.ui.notify(`Session not found: ${targetId}`, "error");
+				return;
+			}
+
+			const restoreBackgroundLifecycle = () => {
+				session.session.setEventHandlers({});
+				if (monitor && !monitor.disposed) {
+					return;
+				}
+				if (session.session.exited) {
+					sessionManager.scheduleCleanup(targetId);
+					return;
+				}
+				sessionManager.restartAutoCleanup(targetId);
+			};
+
+			const config = loadRuntimeConfig(ctx.cwd);
 			try {
 				const result = await ctx.ui.custom<InteractiveShellResult>(
 					(tui, theme, _kb, done) =>
-						new ReattachOverlay(tui, theme, { id: session.id, command: session.command, reason: session.reason, session: session.session }, config, done),
-					{
-						overlay: true,
-						overlayOptions: {
-							width: `${config.overlayWidthPercent}%`,
-							maxHeight: `${config.overlayHeightPercent}%`,
-							anchor: "center",
-							margin: 1,
-						},
-					},
+						new ReattachOverlay(
+							tui,
+							theme,
+							{ id: session.id, command: session.command, reason: session.reason, session: session.session },
+							config,
+							done,
+							() => coordinator.unfocusOverlay(),
+						),
+					createOverlayUiOptions(config),
 				);
+
+				emitTransferredOutput(pi, result, targetId);
 
 				if (monitor && !monitor.disposed) {
 					if (!result.backgrounded) {
+						if (result.transferred) {
+							coordinator.markAgentHandledCompletion(targetId);
+						}
 						monitor.handleExternalCompletion(result.exitCode, result.signal, result.completionOutput);
 						coordinator.deleteMonitor(targetId);
 					}
@@ -802,6 +976,9 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 				} else {
 					sessionManager.scheduleCleanup(targetId);
 				}
+			} catch (error) {
+				restoreBackgroundLifecycle();
+				throw error;
 			} finally {
 				coordinator.endOverlay();
 			}
@@ -828,16 +1005,18 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 			} else if (sessions.length === 1) {
 				targetIds = [sessions[0].id];
 			} else {
-				const options = ["All sessions", ...sessions.map((s) => {
-					const status = s.session.exited ? "exited" : "running";
-					const duration = formatDuration(Date.now() - s.startedAt.getTime());
-					return `${s.id} (${status}, ${duration})`;
-				})];
-				const choice = await ctx.ui.select("Dismiss sessions", options);
+				const options = [
+					{ label: "All sessions" },
+					...sessions.map((s) => {
+						const status = s.session.exited ? "exited" : "running";
+						const duration = formatDuration(Date.now() - s.startedAt.getTime());
+						return { id: s.id, label: `${s.id} (${status}, ${duration})` };
+					}),
+				];
+				const choice = await ctx.ui.select("Dismiss sessions", options.map((o) => o.label));
 				if (!choice) return;
-				targetIds = choice === "All sessions"
-					? sessions.map(s => s.id)
-					: [choice.split(" (")[0]];
+				const selected = options.find((o) => o.label === choice);
+				targetIds = selected?.id ? [selected.id] : sessions.map((s) => s.id);
 			}
 
 			for (const tid of targetIds) {
@@ -875,17 +1054,7 @@ function setupDispatchCompletion(
 		const wasAgentInitiated = coordinator.consumeAgentHandledCompletion(id);
 
 		if (result.transferred) {
-			const truncatedNote = result.transferred.truncated
-				? ` (truncated from ${result.transferred.totalLines} total lines)`
-				: "";
-			const content = `Session ${id} output transferred (${result.transferred.lines.length} lines${truncatedNote}):\n\n${result.transferred.lines.join("\n")}`;
-			pi.sendMessage({
-				customType: "interactive-shell-transfer",
-				content,
-				display: true,
-				details: { sessionId: id, transferred: result.transferred, exitCode: result.exitCode, signal: result.signal },
-			}, { triggerTurn: true });
-			pi.events.emit("interactive-shell:transfer", { sessionId: id, transferred: result.transferred, exitCode: result.exitCode, signal: result.signal });
+			emitTransferredOutput(pi, result, id);
 			sessionManager.unregisterActive(id, true);
 			coordinator.disposeMonitor(id);
 			return;
@@ -951,7 +1120,8 @@ function setupDispatchCompletion(
 		}
 
 		coordinator.disposeMonitor(id);
-	}).catch(() => {
+	}).catch((error) => {
+		console.error(`interactive-shell: overlay error for session ${id}:`, error);
 		coordinator.endOverlay();
 		const recovery = ctx.onOverlayError?.();
 		sessionManager.unregisterActive(id, recovery?.releaseId ?? true);

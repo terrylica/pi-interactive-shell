@@ -2,6 +2,37 @@
 
 All notable changes to the `pi-interactive-shell` extension will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **Focus switching** — configurable `focusShortcut` (default `alt+\``) toggles focus between overlay and main chat. Same shortcut inside the overlay unfocuses back. Overlay uses `nonCapturing` mode with handle-based focus control.
+- **`/spawn` command** — launch pi in an overlay with `/spawn` (fresh session) or `/spawn fork` (fork current session with platform-aware shell quoting).
+- **`Alt+Shift+P` shortcut** — quick-launch a fresh pi session overlay.
+- **Return-to-agent control** — after taking over a hands-free session, press `Ctrl+G` or select "Return control to agent" from the `Ctrl+Q` menu to resume agent monitoring. Re-registers session in streaming mode and restarts hands-free update timers.
+- **`agent-resumed` status** — new `HandsFreeUpdate.status` value emitted when the user returns control to the agent. Handled in both streaming and non-blocking notification paths.
+- **Transfer output from commands** — `Ctrl+T` transfer results from `/spawn` and `/attach` now flow back into the agent conversation via shared `emitTransferredOutput()` helper, matching the tool-call behavior.
+- **Per-session completion suppression** — `agentHandledCompletion` moved from a single flag to a `Set<string>` on the coordinator, so concurrent sessions can't interfere with each other's notification paths.
+- **Stale monitor cleanup** — `disposeStaleMonitor()` helper cleans up orphan headless monitors and their active-session registrations when a background session has already been removed.
+- **3 new test files** (10 tests): `spawn-command.test.ts` (fresh, fork, quoting, persist guard, transfer forwarding), `command-session-selection.test.ts` (IDs containing delimiters), `kill-session-suppression.test.ts` (conditional mark on incomplete/complete sessions).
+
+### Changed
+- `/attach` and `/dismiss` selection uses structured `{ id, label }` option mapping with `.find()` instead of parsing rendered label strings by delimiter. Session IDs containing ` - ` or ` (` no longer break selection.
+- Kill suppression is conditional on completion state — `markAgentHandledCompletion` only set when `session.getResult()` is not yet available, preventing leaked suppression tokens for already-completed sessions.
+- `spawn-helper.ts` uses inline ENOENT narrowing instead of single-use `getErrnoCode` helper.
+- Dynamic dialog footer height (`dialogOptions.length + 2`) in the overlay accommodates the variable return-to-agent option. Reattach overlay keeps the static `FOOTER_LINES_DIALOG` constant (always 4 options).
+- Flattened nested if/else in footer rendering for both overlay components.
+- `createOverlayUiOptions()` deduplicates overlay UI configuration across all call sites.
+- `runtime-coordinator.ts` manages overlay focus via `OverlayHandle` (focus, unfocus, set, clear).
+- Config parse errors now pass the full error object to `console.error` instead of `String(error)`.
+- Shutdown kill failure preserves slug reservation to prevent ID collision with potentially still-running sessions.
+
+### Fixed
+- Duplicate completion notifications on monitored attach + transfer (transfer now marks `agentHandledCompletion` before monitor fires).
+- Cancelled dispatch sessions reported as "completed" — now correctly reports "was killed".
+- Stale headless monitors leaked when the corresponding background session was already cleaned up.
+- Zombie active-session registrations left behind on stale monitor disposal.
+- PTY event handlers not reset on attach failure recovery, causing stale overlay callbacks on disposed components.
+
 ## [0.10.1] - 2026-03-13
 
 ### Fixed

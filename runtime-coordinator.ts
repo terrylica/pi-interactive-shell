@@ -1,8 +1,10 @@
+import type { OverlayHandle } from "@mariozechner/pi-tui";
 import type { HeadlessDispatchMonitor } from "./headless-monitor.js";
 
 /** Centralizes overlay, monitor, widget, and completion-suppression state for the extension runtime. */
 export class InteractiveShellCoordinator {
 	private overlayOpen = false;
+	private overlayHandle: OverlayHandle | null = null;
 	private headlessMonitors = new Map<string, HeadlessDispatchMonitor>();
 	private bgWidgetCleanup: (() => void) | null = null;
 	private agentHandledCompletion = new Set<string>();
@@ -19,6 +21,23 @@ export class InteractiveShellCoordinator {
 
 	endOverlay(): void {
 		this.overlayOpen = false;
+		this.clearOverlayHandle();
+	}
+
+	focusOverlay(): void {
+		this.overlayHandle?.focus();
+	}
+
+	unfocusOverlay(): void {
+		this.overlayHandle?.unfocus();
+	}
+
+	setOverlayHandle(handle: OverlayHandle): void {
+		this.overlayHandle = handle;
+	}
+
+	clearOverlayHandle(): void {
+		this.overlayHandle = null;
 	}
 
 	markAgentHandledCompletion(sessionId: string): void {

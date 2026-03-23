@@ -251,7 +251,7 @@ interactive_shell({ dismissBackground: true })               // all sessions
 interactive_shell({ dismissBackground: "calm-reef" })        // specific session
 ```
 
-User can also `/attach` or `/attach <id>` to reattach, and `/dismiss` or `/dismiss <id>` to clean up from the chat.
+User can also `/spawn` (fresh pi session), `/spawn fork` (fork current session into a new pi session), `/attach` or `/attach <id>` to reattach, and `/dismiss` or `/dismiss <id>` to clean up from the chat.
 
 ## Keys
 
@@ -261,6 +261,9 @@ User can also `/attach` or `/attach <id>` to reattach, and `/dismiss` or `/dismi
 | Ctrl+B | Background session (dismiss overlay, keep running) |
 | Ctrl+Q | Session menu (transfer/background/kill/cancel) |
 | Shift+Up/Down | Scroll history |
+| Alt+Backtick (default) | Toggle focus between overlay and main chat |
+| Ctrl+G | Return to agent monitoring (only during takeover) |
+| Alt+Shift+P | Spawn fresh `pi` session overlay |
 | Any key (hands-free) | Take over control |
 
 ## Config
@@ -273,6 +276,7 @@ Configuration files (project overrides global):
 {
   "overlayWidthPercent": 95,
   "overlayHeightPercent": 60,
+  "focusShortcut": "alt+`",
   "scrollbackLines": 5000,
   "exitAutoCloseDelay": 10,
   "minQueryIntervalSeconds": 60,
@@ -298,6 +302,7 @@ Configuration files (project overrides global):
 |---------|---------|-------------|
 | `overlayWidthPercent` | 95 | Overlay width (10-100%) |
 | `overlayHeightPercent` | 60 | Overlay height (20-90%) |
+| `focusShortcut` | "alt+\`" | Toggle focus between overlay and main chat |
 | `scrollbackLines` | 5000 | Terminal scrollback buffer |
 | `exitAutoCloseDelay` | 10 | Seconds before auto-close after exit |
 | `minQueryIntervalSeconds` | 60 | Rate limit between agent queries |

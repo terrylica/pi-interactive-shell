@@ -11,6 +11,7 @@ import {
 	HEADER_LINES,
 	FOOTER_LINES_COMPACT,
 	FOOTER_LINES_DIALOG,
+	formatShortcut,
 } from "./types.js";
 import { captureCompletionOutput, captureTransferOutput, maybeBuildHandoffPreview, maybeWriteHandoffSnapshot } from "./handoff-utils.js";
 
@@ -31,6 +32,7 @@ export class ReattachOverlay implements Component, Focusable {
 	private lastWidth = 0;
 	private lastHeight = 0;
 	private finished = false;
+	private renderTimeout: ReturnType<typeof setTimeout> | null = null;
 
 	constructor(
 		tui: TUI,
@@ -38,6 +40,7 @@ export class ReattachOverlay implements Component, Focusable {
 		bgSession: { id: string; command: string; reason?: string; session: PtyTerminalSession },
 		config: InteractiveShellConfig,
 		done: (result: InteractiveShellResult) => void,
+		private onUnfocus?: () => void,
 	) {
 		this.tui = tui;
 		this.theme = theme;
@@ -50,7 +53,7 @@ export class ReattachOverlay implements Component, Focusable {
 				if (!bgSession.session.isScrolledUp()) {
 					bgSession.session.scrollToBottom();
 				}
-				this.tui.requestRender();
+				this.debouncedRender();
 			},
 			onExit: () => {
 				if (this.finished) return;
@@ -79,6 +82,16 @@ export class ReattachOverlay implements Component, Focusable {
 
 	private get session(): PtyTerminalSession {
 		return this.bgSession.session;
+	}
+
+	private debouncedRender(): void {
+		if (this.renderTimeout) {
+			clearTimeout(this.renderTimeout);
+		}
+		this.renderTimeout = setTimeout(() => {
+			this.renderTimeout = null;
+			this.tui.requestRender();
+		}, 16);
 	}
 
 	private startExitCountdown(): void {
@@ -203,6 +216,11 @@ export class ReattachOverlay implements Component, Focusable {
 			return;
 		}
 
+		if (matchesKey(data, this.config.focusShortcut)) {
+			this.onUnfocus?.();
+			return;
+		}
+
 		// Ctrl+T: Quick transfer - capture output and close (works in all states including "exited")
 		if (matchesKey(data, "ctrl+t")) {
 			this.finishWithTransfer();
@@ -291,7 +309,8 @@ export class ReattachOverlay implements Component, Focusable {
 	render(width: number): string[] {
 		width = Math.max(4, width);
 		const th = this.theme;
-		const border = (s: string) => th.fg("border", s);
+		const borderColor = this.focused ? "border" : "borderMuted";
+		const border = (s: string) => th.fg(borderColor, s);
 		const accent = (s: string) => th.fg("accent", s);
 		const dim = (s: string) => th.fg("dim", s);
 		const warning = (s: string) => th.fg("warning", s);
@@ -335,19 +354,21 @@ export class ReattachOverlay implements Component, Focusable {
 		const overlayHeight = Math.floor((this.tui.terminal.rows * this.config.overlayHeightPercent) / 100);
 		const footerHeight = this.state === "detach-dialog" ? FOOTER_LINES_DIALOG : FOOTER_LINES_COMPACT;
 		const chrome = HEADER_LINES + footerHeight + 2;
-		const termRows = Math.max(3, overlayHeight - chrome);
+		const termRows = Math.max(0, overlayHeight - chrome);
 
-		if (innerWidth !== this.lastWidth || termRows !== this.lastHeight) {
-			this.session.resize(innerWidth, termRows);
-			this.lastWidth = innerWidth;
-			this.lastHeight = termRows;
-			// After resize, ensure we're at the bottom to prevent flash to top
-			this.session.scrollToBottom();
-		}
+		if (termRows > 0) {
+			if (innerWidth !== this.lastWidth || termRows !== this.lastHeight) {
+				this.session.resize(innerWidth, termRows);
+				this.lastWidth = innerWidth;
+				this.lastHeight = termRows;
+				// After resize, ensure we're at the bottom to prevent flash to top
+				this.session.scrollToBottom();
+			}
 
-		const viewportLines = this.session.getViewportLines({ ansi: this.config.ansiReemit });
-		for (const line of viewportLines) {
-			lines.push(row(truncateToWidth(line, innerWidth, "")));
+			const viewportLines = this.session.getViewportLines({ ansi: this.config.ansiReemit });
+			for (const line of viewportLines) {
+				lines.push(row(truncateToWidth(line, innerWidth, "")));
+			}
 		}
 
 		if (this.session.isScrolledUp()) {
@@ -367,6 +388,7 @@ export class ReattachOverlay implements Component, Focusable {
 		}
 
 		const footerLines: string[] = [];
+		const focusHint = `${formatShortcut(this.config.focusShortcut)} ${this.focused ? "unfocus" : "focus shell"}`;
 
 		if (this.state === "detach-dialog") {
 			footerLines.push(row(accent("Session actions:")));
@@ -387,9 +409,11 @@ export class ReattachOverlay implements Component, Focusable {
 					? th.fg("success", "✓ Exited successfully")
 					: warning(`✗ Exited with code ${this.session.exitCode}`);
 			footerLines.push(row(exitMsg));
-			footerLines.push(row(dim(`Closing in ${this.exitCountdown}s... (any key to close)`)));
+			footerLines.push(row(dim(`Closing in ${this.exitCountdown}s... (any key to close) • ${focusHint}`)));
+		} else if (this.focused) {
+			footerLines.push(row(dim(`Ctrl+T transfer • Ctrl+B background • Ctrl+Q menu • Shift+Up/Down scroll • ${focusHint}`)));
 		} else {
-			footerLines.push(row(dim("Ctrl+T transfer • Ctrl+B background • Ctrl+Q menu • Shift+Up/Down scroll")));
+			footerLines.push(row(dim(focusHint)));
 		}
 
 		while (footerLines.length < footerHeight) {
@@ -411,6 +435,10 @@ export class ReattachOverlay implements Component, Focusable {
 		if (this.initialExitTimeout) {
 			clearTimeout(this.initialExitTimeout);
 			this.initialExitTimeout = null;
+		}
+		if (this.renderTimeout) {
+			clearTimeout(this.renderTimeout);
+			this.renderTimeout = null;
 		}
 		this.stopCountdown();
 		this.session.setEventHandlers({});
