@@ -4,6 +4,14 @@ All notable changes to the `pi-interactive-shell` extension will be documented i
 
 ## [Unreleased]
 
+## [0.10.4] - 2026-04-04
+
+### Fixed
+- Focus shortcut handling now uses a terminal input listener while the overlay is open, so the configured `focusShortcut` toggles focus/unfocus reliably even when editor-level shortcuts would not fire. The default shortcut is now `alt+shift+f` instead of `alt+\`` for better terminal compatibility on macOS and to avoid Pi keybinding conflicts.
+- Overlay shortcut interception now ignores raw key release and key repeat events, which prevents the focus toggle from firing twice on Kitty-enabled terminals and cancelling itself out.
+- Overlay focus state is now more obvious visually: the shell shows a persistent `SHELL FOCUSED` or `EDITOR FOCUSED` badge and switches to a stronger border treatment when focused.
+- `alt+/` side chat is blocked while `pi-interactive-shell` is open and shows a warning instead of opening on top of the shell overlay.
+
 ## [0.10.3] - 2026-04-04
 
 ### Changed
@@ -12,7 +20,7 @@ All notable changes to the `pi-interactive-shell` extension will be documented i
 ## [0.10.2] - 2026-04-04
 
 ### Added
-- **Focus switching** — configurable `focusShortcut` (default `alt+\``) toggles focus between overlay and main chat. Same shortcut inside the overlay unfocuses back. Overlay uses `nonCapturing` mode with handle-based focus control.
+- **Focus switching** — configurable `focusShortcut` (default `alt+shift+f`) toggles focus between overlay and main chat. Same shortcut inside the overlay unfocuses back. Overlay uses `nonCapturing` mode with handle-based focus control.
 - **`/spawn` command** — launch pi in an overlay with `/spawn` (fresh session) or `/spawn fork` (fork current session with platform-aware shell quoting).
 - **`Alt+Shift+P` shortcut** — quick-launch a fresh pi session overlay.
 - **Return-to-agent control** — after taking over a hands-free session, press `Ctrl+G` or select "Return control to agent" from the `Ctrl+Q` menu to resume agent monitoring. Re-registers session in streaming mode and restarts hands-free update timers.

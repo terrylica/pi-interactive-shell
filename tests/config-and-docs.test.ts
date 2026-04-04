@@ -41,7 +41,7 @@ describe("config + docs parity", () => {
 		expect(config.overlayWidthPercent).toBe(10);
 		expect(config.autoExitGracePeriod).toBe(5000);
 		expect(config.overlayHeightPercent).toBe(90);
-		expect(config.focusShortcut).toBe("alt+`");
+		expect(config.focusShortcut).toBe("alt+shift+f");
 
 		rmSync(root, { recursive: true, force: true });
 	});
@@ -56,7 +56,7 @@ describe("config + docs parity", () => {
 
 		expect(defaults.handsFreeQuietThreshold).toBe(8000);
 		expect(defaults.autoExitGracePeriod).toBe(15000);
-		expect(defaults.focusShortcut).toBe("alt+`");
+		expect(defaults.focusShortcut).toBe("alt+shift+f");
 		expect(readme).toContain(`"focusShortcut": "${defaults.focusShortcut}"`);
 		expect(readme).toContain("Toggle focus between overlay and main chat");
 		expect(readme).toContain("/spawn fork");

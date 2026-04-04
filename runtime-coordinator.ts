@@ -32,6 +32,10 @@ export class InteractiveShellCoordinator {
 		this.overlayHandle?.unfocus();
 	}
 
+	isOverlayFocused(): boolean {
+		return this.overlayHandle?.isFocused() === true;
+	}
+
 	setOverlayHandle(handle: OverlayHandle): void {
 		this.overlayHandle = handle;
 	}

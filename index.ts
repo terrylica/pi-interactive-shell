@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { isKeyRelease, isKeyRepeat, matchesKey } from "@mariozechner/pi-tui";
 import { InteractiveShellOverlay } from "./overlay-component.js";
 import { ReattachOverlay } from "./reattach-overlay.js";
 import { PtyTerminalSession } from "./pty-session.js";
@@ -17,6 +18,7 @@ import { createSessionQueryState, getSessionOutput } from "./session-query.js";
 import { InteractiveShellCoordinator } from "./runtime-coordinator.js";
 
 const coordinator = new InteractiveShellCoordinator();
+const SIDE_CHAT_SHORTCUT = "alt+/";
 
 function makeMonitorCompletionCallback(
 	pi: ExtensionAPI,
@@ -170,6 +172,7 @@ function buildSpawnPiCommand(mode: SpawnMode, getSessionFile: () => string | und
 
 export default function interactiveShellExtension(pi: ExtensionAPI) {
 	const startupConfig = loadConfig(process.cwd());
+	let terminalInputCleanup: (() => void) | null = null;
 	const loadRuntimeConfig = (cwd: string): InteractiveShellConfig => ({
 		...loadConfig(cwd),
 		focusShortcut: startupConfig.focusShortcut,
@@ -239,9 +242,31 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 
 	pi.on("session_start", (_event, ctx) => {
 		coordinator.replaceBackgroundWidgetCleanup(setupBackgroundWidget(ctx, sessionManager));
+		terminalInputCleanup?.();
+		terminalInputCleanup = ctx.ui.onTerminalInput((data) => {
+			if (!coordinator.isOverlayOpen()) return undefined;
+			if (isKeyRelease(data) || isKeyRepeat(data)) {
+				return undefined;
+			}
+			if (matchesKey(data, startupConfig.focusShortcut)) {
+				if (coordinator.isOverlayFocused()) {
+					coordinator.unfocusOverlay();
+				} else {
+					coordinator.focusOverlay();
+				}
+				return { consume: true };
+			}
+			if (matchesKey(data, SIDE_CHAT_SHORTCUT)) {
+				ctx.ui.notify("Close pi-interactive-shell first.", "warning");
+				return { consume: true };
+			}
+			return undefined;
+		});
 	});
 
 	pi.on("session_shutdown", () => {
+		terminalInputCleanup?.();
+		terminalInputCleanup = null;
 		coordinator.clearBackgroundWidget();
 		sessionManager.killAll();
 		coordinator.disposeAllMonitors();

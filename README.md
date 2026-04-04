@@ -276,7 +276,7 @@ Configuration files (project overrides global):
 {
   "overlayWidthPercent": 95,
   "overlayHeightPercent": 60,
-  "focusShortcut": "alt+`",
+  "focusShortcut": "alt+shift+f",
   "scrollbackLines": 5000,
   "exitAutoCloseDelay": 10,
   "minQueryIntervalSeconds": 60,
@@ -302,7 +302,7 @@ Configuration files (project overrides global):
 |---------|---------|-------------|
 | `overlayWidthPercent` | 95 | Overlay width (10-100%) |
 | `overlayHeightPercent` | 60 | Overlay height (20-90%) |
-| `focusShortcut` | "alt+\`" | Toggle focus between overlay and main chat |
+| `focusShortcut` | "alt+shift+f" | Toggle focus between overlay and main chat |
 | `scrollbackLines` | 5000 | Terminal scrollback buffer |
 | `exitAutoCloseDelay` | 10 | Seconds before auto-close after exit |
 | `minQueryIntervalSeconds` | 60 | Rate limit between agent queries |

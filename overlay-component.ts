@@ -928,7 +928,10 @@ export class InteractiveShellOverlay implements Component, Focusable {
 	render(width: number): string[] {
 		width = Math.max(4, width);
 		const th = this.theme;
-		const borderColor = this.focused ? "border" : "borderMuted";
+		const borderColor = this.focused ? "borderAccent" : "borderMuted";
+		const borderGlyphs = this.focused
+			? { topLeft: "╔", topRight: "╗", bottomLeft: "╚", bottomRight: "╝", horizontal: "═", vertical: "║", separatorLeft: "╠", separatorRight: "╣" }
+			: { topLeft: "╭", topRight: "╮", bottomLeft: "╰", bottomRight: "╯", horizontal: "─", vertical: "│", separatorLeft: "├", separatorRight: "┤" };
 		const border = (s: string) => th.fg(borderColor, s);
 		const accent = (s: string) => th.fg("accent", s);
 		const dim = (s: string) => th.fg("dim", s);
@@ -939,21 +942,24 @@ export class InteractiveShellOverlay implements Component, Focusable {
 			const vis = visibleWidth(s);
 			return s + " ".repeat(Math.max(0, w - vis));
 		};
-		const row = (content: string) => border("│ ") + pad(content, innerWidth) + border(" │");
+		const row = (content: string) => border(`${borderGlyphs.vertical} `) + pad(content, innerWidth) + border(` ${borderGlyphs.vertical}`);
 		const emptyRow = () => row("");
 
 		const lines: string[] = [];
 
 		// Sanitize command: collapse newlines and whitespace to single spaces for display
 		const sanitizedCommand = this.options.command.replace(/\s+/g, " ").trim();
-		const title = truncateToWidth(sanitizedCommand, innerWidth - 20, "...");
-		const pid = `PID: ${this.session.pid}`;
-		lines.push(border("╭" + "─".repeat(width - 2) + "╮"));
+		const focusBadgeLabel = this.focused ? " SHELL FOCUSED " : " EDITOR FOCUSED ";
+		const focusBadge = th.bg("selectedBg", th.bold(th.fg(this.focused ? "accent" : "muted", focusBadgeLabel)));
+		const pid = dim(`PID: ${this.session.pid}`);
+		const titleMeta = `${focusBadge} ${pid}`;
+		const title = truncateToWidth(sanitizedCommand, Math.max(8, innerWidth - visibleWidth(titleMeta) - 1), "...");
+		lines.push(border(borderGlyphs.topLeft + borderGlyphs.horizontal.repeat(width - 2) + borderGlyphs.topRight));
 		lines.push(
 			row(
 				accent(title) +
-					" ".repeat(Math.max(1, innerWidth - visibleWidth(title) - pid.length)) +
-					dim(pid),
+					" ".repeat(Math.max(1, innerWidth - visibleWidth(title) - visibleWidth(titleMeta))) +
+					titleMeta,
 			),
 		);
 		let hint: string;
@@ -972,7 +978,7 @@ export class InteractiveShellOverlay implements Component, Focusable {
 				: "Ctrl+B background";
 		}
 		lines.push(row(dim(truncateToWidth(hint, innerWidth, "..."))));
-		lines.push(border("├" + "─".repeat(width - 2) + "┤"));
+		lines.push(border(borderGlyphs.separatorLeft + borderGlyphs.horizontal.repeat(width - 2) + borderGlyphs.separatorRight));
 
 		const dialogOptions = this.state === "detach-dialog" ? this.getDialogOptions() : [];
 		const overlayHeight = Math.floor((this.tui.terminal.rows * this.config.overlayHeightPercent) / 100);
@@ -999,16 +1005,16 @@ export class InteractiveShellOverlay implements Component, Focusable {
 			const hintText = "── ↑ scrolled (Shift+Down) ──";
 			const padLen = Math.max(0, Math.floor((width - 2 - visibleWidth(hintText)) / 2));
 			lines.push(
-				border("├") +
+				border(borderGlyphs.separatorLeft) +
 					dim(
 						" ".repeat(padLen) +
 							hintText +
 							" ".repeat(width - 2 - padLen - visibleWidth(hintText)),
 					) +
-					border("┤"),
+					border(borderGlyphs.separatorRight),
 			);
 		} else {
-			lines.push(border("├" + "─".repeat(width - 2) + "┤"));
+			lines.push(border(borderGlyphs.separatorLeft + borderGlyphs.horizontal.repeat(width - 2) + borderGlyphs.separatorRight));
 		}
 
 		const footerLines: string[] = [];
@@ -1047,7 +1053,7 @@ export class InteractiveShellOverlay implements Component, Focusable {
 		}
 		lines.push(...footerLines);
 
-		lines.push(border("╰" + "─".repeat(width - 2) + "╯"));
+		lines.push(border(borderGlyphs.bottomLeft + borderGlyphs.horizontal.repeat(width - 2) + borderGlyphs.bottomRight));
 
 		return lines;
 	}
