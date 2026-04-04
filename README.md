@@ -12,6 +12,8 @@ https://github.com/user-attachments/assets/76f56ecd-fc12-4d92-a01e-e6ae9ba65ff4
 interactive_shell({ command: 'vim config.yaml' })
 ```
 
+Important: the `interactive_shell({...})` snippets in this README are tool calls made by Pi (or extension/prompt authors). End users do not type these directly into chat. As a user, ask Pi to run something (for example: "run this in dispatch mode") or use `/spawn`, `/attach`, and `/dismiss` commands.
+
 ## Why
 
 Some tasks need interactive CLIs - editors, REPLs, database shells, long-running processes. Pi can launch them in an overlay where:
@@ -52,6 +54,8 @@ Three modes control how the agent engages with a session:
 **Dispatch** also returns immediately, but the agent doesn't poll at all. When the session completes — whether by natural exit, quiet detection, timeout, or user intervention — the agent gets woken up with a notification containing the tail output. This is the right mode for delegating a task to a subagent and moving on. For fire-and-forget delegated runs and QA checks, prefer dispatch by default. Add `background: true` to skip the overlay entirely and run headless.
 
 ## Quick Start
+
+The examples below show agent-side tool calls. They are not chat commands for end users.
 
 ### Interactive
 
@@ -251,7 +255,7 @@ interactive_shell({ dismissBackground: true })               // all sessions
 interactive_shell({ dismissBackground: "calm-reef" })        // specific session
 ```
 
-User can also `/spawn` (fresh pi session), `/spawn fork` (fork current session into a new pi session), `/attach` or `/attach <id>` to reattach, and `/dismiss` or `/dismiss <id>` to clean up from the chat.
+User can also `/spawn` (fresh pi session), `/spawn fork` (fork current session into a new pi session), `/attach` or `/attach <id>` to reattach, and `/dismiss` or `/dismiss <id>` to clean up from the chat. The keyboard spawn shortcut is separate from `/spawn` and is configurable via `spawnShortcut`.
 
 ## Keys
 
@@ -261,9 +265,9 @@ User can also `/spawn` (fresh pi session), `/spawn fork` (fork current session i
 | Ctrl+B | Background session (dismiss overlay, keep running) |
 | Ctrl+Q | Session menu (transfer/background/kill/cancel) |
 | Shift+Up/Down | Scroll history |
-| Alt+Backtick (default) | Toggle focus between overlay and main chat |
+| Alt+Shift+F (default) | Toggle focus between overlay and main chat (`focusShortcut`) |
 | Ctrl+G | Return to agent monitoring (only during takeover) |
-| Alt+Shift+P | Spawn fresh `pi` session overlay |
+| Alt+Shift+P (default) | Spawn fresh `pi` session overlay (`spawnShortcut`) |
 | Any key (hands-free) | Take over control |
 
 ## Config
@@ -272,11 +276,14 @@ Configuration files (project overrides global):
 - **Global:** `~/.pi/agent/interactive-shell.json`
 - **Project:** `.pi/interactive-shell.json`
 
+Shortcut settings are pinned at startup. If you change `focusShortcut` or `spawnShortcut`, reload or restart Pi to apply them.
+
 ```json
 {
   "overlayWidthPercent": 95,
   "overlayHeightPercent": 60,
   "focusShortcut": "alt+shift+f",
+  "spawnShortcut": "alt+shift+p",
   "scrollbackLines": 5000,
   "exitAutoCloseDelay": 10,
   "minQueryIntervalSeconds": 60,
@@ -303,6 +310,7 @@ Configuration files (project overrides global):
 | `overlayWidthPercent` | 95 | Overlay width (10-100%) |
 | `overlayHeightPercent` | 60 | Overlay height (20-90%) |
 | `focusShortcut` | "alt+shift+f" | Toggle focus between overlay and main chat |
+| `spawnShortcut` | "alt+shift+p" | Spawn a fresh `pi` session overlay |
 | `scrollbackLines` | 5000 | Terminal scrollback buffer |
 | `exitAutoCloseDelay` | 10 | Seconds before auto-close after exit |
 | `minQueryIntervalSeconds` | 60 | Rate limit between agent queries |
