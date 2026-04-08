@@ -61,7 +61,7 @@ Queries are limited to once every 60 seconds (configurable). If you query too so
 the tool will automatically wait until the limit expires before returning.
 
 SENDING INPUT:
-- interactive_shell({ sessionId: "calm-reef", input: "/help\\n" }) - raw text/keystrokes
+- interactive_shell({ sessionId: "calm-reef", input: "/help", submit: true }) - type text and press Enter
 - interactive_shell({ sessionId: "calm-reef", inputKeys: ["ctrl+c"] }) - named keys
 - interactive_shell({ sessionId: "calm-reef", inputKeys: ["up", "up", "enter"] }) - multiple keys
 - interactive_shell({ sessionId: "calm-reef", inputHex: ["0x1b", "0x5b", "0x41"] }) - raw escape sequences
@@ -69,6 +69,7 @@ SENDING INPUT:
 
 Named keys for inputKeys: up, down, left, right, enter, escape, tab, backspace, ctrl+c, ctrl+d, etc.
 Modifiers: ctrl+x, alt+x, shift+tab, ctrl+alt+delete (or c-x, m-x, s-tab syntax)
+For editor-based TUIs like pi, raw \`input\` only types text. It does NOT submit by itself. Prefer \`submit: true\` or \`inputKeys: ["enter"]\` instead of relying on \`\\n\`.
 
 TIMEOUT (for TUI commands that don't exit cleanly):
 Use timeout to auto-kill after N milliseconds. Useful for capturing output from commands like "pi --help":
@@ -98,6 +99,7 @@ Dismiss an existing overlay, keep the process running in background:
 ATTACH (REATTACH TO BACKGROUND SESSION):
 Open an overlay for a background session:
 - interactive_shell({ attach: "calm-reef" }) - interactive (blocking)
+- interactive_shell({ attach: "calm-reef", mode: "hands-free" }) - hands-free (poll)
 - interactive_shell({ attach: "calm-reef", mode: "dispatch" }) - dispatch (non-blocking, notified)
 
 LIST BACKGROUND SESSIONS:
@@ -198,7 +200,10 @@ export const toolParameters = Type.Object({
 		}),
 	),
 	input: Type.Optional(
-		Type.String({ description: "Raw text/keystrokes to send to the session (requires sessionId). For special keys, use inputKeys instead." }),
+		Type.String({ description: "Raw text to send to the session (requires sessionId). This only types the text; it does not submit it. Use submit=true or inputKeys:['enter'] when you want to press Enter." }),
+	),
+	submit: Type.Optional(
+		Type.Boolean({ description: "Press Enter after sending any input. Prefer this when submitting slash commands or prompts to editor-based TUIs like pi. (requires sessionId)" }),
 	),
 	inputKeys: Type.Optional(
 		Type.Array(Type.String(), {
@@ -321,6 +326,7 @@ export interface ToolParams {
 	incremental?: boolean;
 	settings?: { updateInterval?: number; quietThreshold?: number };
 	input?: string;
+	submit?: boolean;
 	inputKeys?: string[];
 	inputHex?: string[];
 	inputPaste?: string;

@@ -512,7 +512,7 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 		label: TOOL_LABEL,
 		description: TOOL_DESCRIPTION,
 		promptSnippet:
-			"Use this only to delegate tasks to interactive CLI coding agents (pi/claude/gemini/codex/aider). Prefer mode='dispatch' for fire-and-forget delegations.",
+			"Use this only to delegate tasks to interactive CLI coding agents (pi/claude/gemini/codex/aider). Prefer mode='dispatch' for fire-and-forget delegations. When sending slash commands or prompts to an existing session, use submit=true so the text is actually submitted.",
 		parameters: toolParameters,
 
 		async execute(_toolCallId, params, _signal, onUpdate, ctx) {
@@ -528,6 +528,7 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 				incremental,
 				settings,
 				input,
+				submit,
 				inputKeys,
 				inputHex,
 				inputPaste,
@@ -635,9 +636,10 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 					}
 				}
 
-				if (effectiveInput !== undefined) {
-					const translatedInput = translateInput(effectiveInput);
-					const success = sessionManager.writeToActive(sessionId, translatedInput);
+				if (effectiveInput !== undefined || submit) {
+					const translatedInput = effectiveInput !== undefined ? translateInput(effectiveInput) : "";
+					const finalInput = submit ? `${translatedInput}\r` : translatedInput;
+					const success = sessionManager.writeToActive(sessionId, finalInput);
 					if (!success) {
 						return {
 							content: [{ type: "text", text: `Failed to send input to session: ${sessionId}` }],
@@ -645,10 +647,16 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 							details: { sessionId, error: "write_failed" },
 						};
 					}
-					const inputDesc = typeof effectiveInput === "string"
-						? effectiveInput.length === 0 ? "(empty)" : effectiveInput.length > 50 ? `${effectiveInput.slice(0, 50)}...` : effectiveInput
-						: [effectiveInput.text ?? "", effectiveInput.keys ? `keys:[${effectiveInput.keys.join(",")}]` : "", effectiveInput.hex ? `hex:[${effectiveInput.hex.length} bytes]` : "", effectiveInput.paste ? `paste:[${effectiveInput.paste.length} chars]` : ""].filter(Boolean).join(" + ") || "(empty)";
-					actions.push(`sent: ${inputDesc}`);
+					const inputDesc = effectiveInput === undefined
+						? ""
+						: typeof effectiveInput === "string"
+							? effectiveInput.length === 0 ? "(empty)" : effectiveInput.length > 50 ? `${effectiveInput.slice(0, 50)}...` : effectiveInput
+							: [effectiveInput.text ?? "", effectiveInput.keys ? `keys:[${effectiveInput.keys.join(",")}]` : "", effectiveInput.hex ? `hex:[${effectiveInput.hex.length} bytes]` : "", effectiveInput.paste ? `paste:[${effectiveInput.paste.length} chars]` : ""].filter(Boolean).join(" + ") || "(empty)";
+					if (submit) {
+						actions.push(inputDesc ? `sent: ${inputDesc} + enter` : "sent: enter");
+					} else {
+						actions.push(`sent: ${inputDesc}`);
+					}
 				}
 
 				if (actions.length === 0) {

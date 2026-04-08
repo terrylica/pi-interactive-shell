@@ -254,16 +254,16 @@ export function translateInput(input: string | { text?: string; keys?: string[];
 		result += input.text;
 	}
 
+	// Bracketed paste
+	if (input.paste) {
+		result += encodePaste(input.paste);
+	}
+
 	// Named keys with modifier support
 	if (input.keys) {
 		for (const key of input.keys) {
 			result += encodeKeyToken(key);
 		}
-	}
-
-	// Bracketed paste
-	if (input.paste) {
-		result += encodePaste(input.paste);
 	}
 
 	return result;

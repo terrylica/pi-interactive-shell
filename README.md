@@ -97,6 +97,7 @@ interactive_shell({ sessionId: "calm-reef" })
 // → { status: "running", output: "Server ready on :3000", runtime: 45000 }
 
 // Send input when needed
+interactive_shell({ sessionId: "calm-reef", input: "/run review", submit: true })
 interactive_shell({ sessionId: "calm-reef", inputKeys: ["ctrl+c"] })
 
 // Kill when done
@@ -196,8 +197,11 @@ For multi-turn sessions where you need back-and-forth interaction, leave it disa
 ### Send Input
 
 ```typescript
-// Text
-interactive_shell({ sessionId: "calm-reef", input: "SELECT * FROM users;\n" })
+// Text only (types text but does not submit)
+interactive_shell({ sessionId: "calm-reef", input: "SELECT * FROM users;" })
+
+// Type text and press Enter
+interactive_shell({ sessionId: "calm-reef", input: "SELECT * FROM users;", submit: true })
 
 // Named keys
 interactive_shell({ sessionId: "calm-reef", inputKeys: ["ctrl+c"] })
@@ -212,6 +216,8 @@ interactive_shell({ sessionId: "calm-reef", inputHex: ["0x1b", "0x5b", "0x41"] }
 // Combine text with keys
 interactive_shell({ sessionId: "calm-reef", input: "y", inputKeys: ["enter"] })
 ```
+
+For editor-based TUIs like pi, raw `input` only types text. It does not submit the prompt. Prefer `submit: true` or `inputKeys: ["enter"]` instead of relying on `\n`.
 
 ### Configurable Output
 

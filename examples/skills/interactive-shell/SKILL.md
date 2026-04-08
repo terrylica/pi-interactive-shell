@@ -1,5 +1,5 @@
 ---
-name: pi-interactive-shell
+name: interactive-shell
 description: Cheat sheet + workflow for launching interactive coding-agent CLIs (Claude Code, Gemini CLI, Codex CLI, Cursor CLI, and pi itself) via the interactive_shell overlay or headless dispatch. Use for TUI agents and long-running processes that need supervision, fire-and-forget delegation, or headless background execution. Regular bash commands should use the bash tool instead.
 ---
 
@@ -477,6 +477,38 @@ interactive_shell({ attach: "calm-reef", mode: "dispatch" })    // dispatch (not
 interactive_shell({ dismissBackground: true })               // all
 interactive_shell({ dismissBackground: "calm-reef" })        // specific
 ```
+
+## Local Testing Hygiene
+
+When using `interactive_shell` for one-off local testing, do **not** leave sessions running in the background unless the user explicitly wants them kept alive. A stack of background sessions in the widget usually means the agent used backgrounding as an escape hatch and never cleaned up.
+
+Best practice:
+- Prefer `kill: true` or normal process exit for finite test runs.
+- Only background a session if you expect to come back to it soon or the user asked to keep it.
+- Before ending the task, sweep background sessions created for testing.
+- Keep background sessions only for intentional long-lived work like dev servers, watchers, or manual validation the user is actively using.
+
+Typical cleanup flow:
+
+```typescript
+// Inspect what is still running
+interactive_shell({ listBackground: true })
+
+// Dismiss a specific leftover test session
+interactive_shell({ dismissBackground: "keen-cove" })
+
+// Or, if the background sessions were just temporary test artifacts from this task,
+// dismiss all of them in one sweep
+interactive_shell({ dismissBackground: true })
+```
+
+To kill all backgrounded interactive shell sessions and their processes in one sweep, use `interactive_shell({ dismissBackground: true })`.
+
+Decision rule:
+- **One-off test / repro / validation run** → kill or dismiss it when done.
+- **Dev server / watch mode / ongoing manual check** → background only if the user wants it preserved.
+
+If the user backgrounds a session manually with `Ctrl+B`, the agent should still clean it up later unless the user clearly wants it kept.
 
 ## Quick Reference
 

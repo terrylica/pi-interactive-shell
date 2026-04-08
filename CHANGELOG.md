@@ -4,6 +4,16 @@ All notable changes to the `pi-interactive-shell` extension will be documented i
 
 ## [Unreleased]
 
+### Added
+- `submit` tool parameter for `interactive_shell` session input so the agent can type text and press Enter in one call, avoiding the common failure mode where commands are left sitting in editor-based TUIs like pi.
+- Regression tests covering `submit: true` for plain text input and bracketed paste input.
+
+### Changed
+- Input docs now explicitly state that raw `input` only types text and does not submit it.
+- README, `SKILL.md`, and tool help now prefer `submit: true` or `inputKeys: ["enter"]` over relying on `\n` for command submission.
+- The registered `interactive_shell` prompt snippet now nudges agents to use `submit=true` when sending slash commands or prompts to an existing session.
+- Structured input now emits bracketed paste content before trailing key presses, so combinations like paste-plus-Enter submit in the expected order.
+
 ## [0.10.7] - 2026-04-04
 
 ### Added

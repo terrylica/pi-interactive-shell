@@ -95,8 +95,14 @@ describe("config + docs parity", () => {
 		expect(readme).toContain(`"handsFreeQuietThreshold": ${defaults.handsFreeQuietThreshold}`);
 		expect(readme).toContain(`"autoExitGracePeriod": ${defaults.autoExitGracePeriod}`);
 		expect(readme).toContain(`Dispatch defaults \`autoExitOnQuiet: true\` — the session gets a 15s startup grace period`);
+		expect(readme).toContain('submit: true');
+		expect(readme).toContain('raw `input` only types text. It does not submit the prompt.');
 		expect(skill).toContain("~8s of quiet");
+		expect(skill).toContain('submit: true');
+		expect(skill).toContain('raw `input` only types text. It does not submit the prompt.');
 		expect(toolSchema).toContain(`default: ${defaults.handsFreeQuietThreshold}ms`);
+		expect(toolSchema).toContain('submit: true');
+		expect(toolSchema).toContain('This only types the text; it does not submit it.');
 		expect(toolSchema).toContain(`default: ${defaults.autoExitGracePeriod}ms`);
 
 		rmSync(root, { recursive: true, force: true });
