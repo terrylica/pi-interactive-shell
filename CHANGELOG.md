@@ -4,15 +4,21 @@ All notable changes to the `pi-interactive-shell` extension will be documented i
 
 ## [Unreleased]
 
+## [0.10.8] - 2026-04-09
+
 ### Added
 - `submit` tool parameter for `interactive_shell` session input so the agent can type text and press Enter in one call, avoiding the common failure mode where commands are left sitting in editor-based TUIs like pi.
 - Regression tests covering `submit: true` for plain text input and bracketed paste input.
 
 ### Changed
+- PTY backend switched from `node-pty` to `zigpty` in `pty-session.ts`, keeping the existing `PtyTerminalSession` behavior and higher-level `interactive_shell` API unchanged.
 - Input docs now explicitly state that raw `input` only types text and does not submit it.
 - README, `SKILL.md`, and tool help now prefer `submit: true` or `inputKeys: ["enter"]` over relying on `\n` for command submission.
 - The registered `interactive_shell` prompt snippet now nudges agents to use `submit=true` when sending slash commands or prompts to an existing session.
 - Structured input now emits bracketed paste content before trailing key presses, so combinations like paste-plus-Enter submit in the expected order.
+
+### Removed
+- Removed the `node-pty` macOS spawn-helper permission workaround from runtime and install scripts (`spawn-helper.ts`, `scripts/fix-spawn-helper.cjs`, and the `postinstall` hook).
 
 ## [0.10.7] - 2026-04-04
 

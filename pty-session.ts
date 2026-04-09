@@ -1,11 +1,10 @@
 import { stripVTControlCharacters } from "node:util";
-import * as pty from "node-pty";
+import { spawn, type IPty } from "zigpty";
 import type { IBufferCell, Terminal as XtermTerminal } from "@xterm/headless";
 import xterm from "@xterm/headless";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { sliceLogOutput, trimRawOutput } from "./pty-log.js";
 import { splitAroundDsr, buildCursorPositionResponse } from "./pty-protocol.js";
-import { ensureSpawnHelperExec } from "./spawn-helper.js";
 
 const Terminal = xterm.Terminal;
 
@@ -136,7 +135,7 @@ class WriteQueue {
 }
 
 export class PtyTerminalSession {
-	private ptyProcess: pty.IPty;
+	private ptyProcess: IPty;
 	private xterm: XtermTerminal;
 	private serializer: SerializeAddon | null = null;
 	private _exited = false;
@@ -191,12 +190,14 @@ export class PtyTerminalSession {
 				: process.env.SHELL || "/bin/sh");
 		const shellArgs = process.platform === "win32" ? ["/c", command] : ["-c", command];
 
-		const mergedEnv = env ? { ...process.env, ...env } : { ...process.env };
-		if (!mergedEnv.TERM) mergedEnv.TERM = "xterm-256color";
+		const mergedEnvRaw = env ? { ...process.env, ...env } : { ...process.env };
+		if (!mergedEnvRaw.TERM) mergedEnvRaw.TERM = "xterm-256color";
+		const mergedEnv: Record<string, string> = {};
+		for (const [key, value] of Object.entries(mergedEnvRaw)) {
+			if (value !== undefined) mergedEnv[key] = value;
+		}
 
-		ensureSpawnHelperExec();
-
-		this.ptyProcess = pty.spawn(shell, shellArgs, {
+		this.ptyProcess = spawn(shell, shellArgs, {
 			name: "xterm-256color",
 			cols,
 			rows,
@@ -205,20 +206,21 @@ export class PtyTerminalSession {
 		});
 
 		this.ptyProcess.onData((data) => {
+			const chunk = typeof data === "string" ? data : data.toString("utf8");
 			// Handle DSR (Device Status Report) cursor position queries
 			// TUI apps send ESC[6n or ESC[?6n expecting ESC[row;colR response
 			// We must process in order: write text to xterm, THEN respond to DSR
-			const { segments, hasDsr } = splitAroundDsr(data);
+			const { segments, hasDsr } = splitAroundDsr(chunk);
 
 			if (!hasDsr) {
 				// Fast path: no DSR in data
 				this.writeQueue.enqueue(async () => {
-					this.rawOutput += data;
+					this.rawOutput += chunk;
 					this.trimRawOutputIfNeeded();
 					await new Promise<void>((resolve) => {
-						this.xterm.write(data, () => resolve());
+						this.xterm.write(chunk, () => resolve());
 					});
-					this.notifyDataListeners(data);
+					this.notifyDataListeners(chunk);
 				});
 			} else {
 				// Process each segment in order, responding to DSR after writing preceding text
@@ -602,6 +604,11 @@ export class PtyTerminalSession {
 
 	dispose(): void {
 		this.kill();
+		try {
+			this.ptyProcess.close();
+		} catch {
+			// Ignore close errors during teardown.
+		}
 		this.xterm.dispose();
 	}
 }

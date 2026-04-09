@@ -32,7 +32,7 @@ pi install npm:pi-interactive-shell
 
 The `interactive-shell` skill is automatically symlinked to `~/.pi/agent/skills/interactive-shell/`.
 
-**Requires:** Node.js, build tools for `node-pty` (Xcode CLI tools on macOS).
+**Requires:** Node.js. PTY support uses `zigpty` prebuilt binaries (no `node-gyp` toolchain required on supported platforms).
 
 ## Modes
 
@@ -383,7 +383,7 @@ Shortcut settings are pinned at startup. If you change `focusShortcut` or `spawn
 ## How It Works
 
 ```
-interactive_shell → node-pty → subprocess
+interactive_shell → zigpty → subprocess
                   ↓
             xterm-headless (terminal emulation)
                   ↓
