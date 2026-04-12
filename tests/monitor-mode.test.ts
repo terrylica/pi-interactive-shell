@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 type MonitorOptionsCapture = {
 	monitor?: {
-		strategy: "stream" | "poll-diff";
+		strategy: "stream" | "poll-diff" | "file-watch";
 		triggers: Array<{ id: string; match: (input: string) => string | undefined; cooldownMs?: number }>;
 		pollIntervalMs: number;
 		dedupeExactLine: boolean;
@@ -15,6 +15,8 @@ async function setupHarness() {
 	let toolDef: any;
 	let monitorOptions: MonitorOptionsCapture = null;
 	let launchedCommand: string | undefined;
+	let monitorCompleteCallback: ((info: unknown) => void) | undefined;
+	const sendMessage = vi.fn();
 
 	vi.resetModules();
 	vi.doMock("@mariozechner/pi-coding-agent", () => ({
@@ -97,9 +99,10 @@ async function setupHarness() {
 				_session: unknown,
 				_config: unknown,
 				options: MonitorOptionsCapture,
-				_onComplete: (info: unknown) => void,
+				onComplete: (info: unknown) => void,
 			) {
 				monitorOptions = options;
+				monitorCompleteCallback = onComplete;
 			}
 			getResult() { return undefined; }
 			registerCompleteCallback() {}
@@ -137,13 +140,15 @@ async function setupHarness() {
 		}),
 		on: vi.fn(),
 		events: { emit: vi.fn() },
-		sendMessage: vi.fn(),
+		sendMessage,
 	} as any);
 
 	return {
 		toolDef,
 		getMonitorOptions: () => monitorOptions,
 		getLaunchedCommand: () => launchedCommand,
+		getMonitorCompleteCallback: () => monitorCompleteCallback,
+		sendMessage,
 	};
 }
 
@@ -251,5 +256,207 @@ describe("monitor mode", () => {
 		expect(result.isError).not.toBe(true);
 		expect(harness.getLaunchedCommand()).toContain("while true; do");
 		expect(harness.getLaunchedCommand()).toContain("echo health");
+	});
+
+	it("supports regex capture thresholds in triggers", async () => {
+		const harness = await setupHarness();
+		const result = await harness.toolDef.execute("call-1", {
+			command: "echo prices",
+			mode: "monitor",
+			monitor: {
+				strategy: "stream",
+				triggers: [{
+					id: "nvda-below",
+					regex: "/NVDA:\\s*\\$?(\\d+(?:\\.\\d+)?)/",
+					threshold: { captureGroup: 1, op: "lt", value: 120 },
+				}],
+			},
+		}, undefined, undefined, {
+			hasUI: false,
+			cwd: "/tmp/project",
+			ui: {},
+			sessionManager: { getSessionFile: () => "/tmp/project/session.jsonl" },
+		} as any);
+
+		expect(result.isError).not.toBe(true);
+		const match = harness.getMonitorOptions()?.monitor?.triggers[0]?.match;
+		expect(match?.("NVDA: $119.50")).toBe("NVDA: $119.50");
+		expect(match?.("NVDA: $120.50")).toBeUndefined();
+	});
+
+	it("rejects threshold config on literal triggers", async () => {
+		const { toolDef } = await setupHarness();
+		const result = await toolDef.execute("call-1", {
+			command: "echo test",
+			mode: "monitor",
+			monitor: {
+				strategy: "stream",
+				triggers: [{
+					id: "bad-threshold",
+					literal: "NVDA",
+					threshold: { captureGroup: 1, op: "lt", value: 120 },
+				}],
+			},
+		}, undefined, undefined, {
+			hasUI: false,
+			cwd: "/tmp/project",
+			ui: {},
+			sessionManager: { getSessionFile: () => "/tmp/project/session.jsonl" },
+		} as any);
+
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toContain("threshold requires regex matcher");
+	});
+
+	it("requires fileWatch config for file-watch strategy", async () => {
+		const { toolDef } = await setupHarness();
+		const result = await toolDef.execute("call-1", {
+			mode: "monitor",
+			monitor: {
+				strategy: "file-watch",
+				triggers: [{ id: "pdf", regex: "/\\.pdf$/i" }],
+			},
+		}, undefined, undefined, {
+			hasUI: false,
+			cwd: "/tmp/project",
+			ui: {},
+			sessionManager: { getSessionFile: () => "/tmp/project/session.jsonl" },
+		} as any);
+
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toContain("monitor.fileWatch is required");
+	});
+
+	it("builds generated command for file-watch strategy", async () => {
+		const harness = await setupHarness();
+		const result = await harness.toolDef.execute("call-1", {
+			mode: "monitor",
+			monitor: {
+				strategy: "file-watch",
+				fileWatch: { path: "./uploads", recursive: true, events: ["rename"] },
+				triggers: [{ id: "pdf", regex: "/\\.pdf$/i" }],
+			},
+		}, undefined, undefined, {
+			hasUI: false,
+			cwd: "/tmp/project",
+			ui: {},
+			sessionManager: { getSessionFile: () => "/tmp/project/session.jsonl" },
+		} as any);
+
+		expect(result.isError).not.toBe(true);
+		expect(harness.getMonitorOptions()?.monitor?.strategy).toBe("file-watch");
+		expect(harness.getLaunchedCommand()).toContain("-e");
+		expect(harness.getLaunchedCommand()).toContain("uploads");
+	});
+
+	it("returns monitor status summaries", async () => {
+		const harness = await setupHarness();
+		const started = await harness.toolDef.execute("call-1", {
+			command: "npm test --watch",
+			mode: "monitor",
+			monitor: {
+				strategy: "stream",
+				triggers: [{ id: "fail", literal: "FAIL" }],
+			},
+		}, undefined, undefined, {
+			hasUI: false,
+			cwd: "/tmp/project",
+			ui: {},
+			sessionManager: { getSessionFile: () => "/tmp/project/session.jsonl" },
+		} as any);
+
+		expect(started.isError).not.toBe(true);
+		const status = await harness.toolDef.execute("call-2", {
+			monitorStatus: true,
+			monitorSessionId: "monitor-1",
+		}, undefined, undefined, {
+			hasUI: false,
+			cwd: "/tmp/project",
+			ui: {},
+			sessionManager: { getSessionFile: () => "/tmp/project/session.jsonl" },
+		} as any);
+
+		expect(status.isError).not.toBe(true);
+		expect(status.content[0].text).toContain("Monitor state for monitor-1");
+		expect(status.content[0].text).toContain("Status: running");
+	});
+
+	it("supports monitorEvents filtering by trigger and sinceEventId", async () => {
+		const harness = await setupHarness();
+		await harness.toolDef.execute("call-1", {
+			command: "npm test --watch",
+			mode: "monitor",
+			monitor: {
+				strategy: "stream",
+				triggers: [
+					{ id: "fail", literal: "FAIL" },
+					{ id: "warn", literal: "WARN" },
+				],
+			},
+		}, undefined, undefined, {
+			hasUI: false,
+			cwd: "/tmp/project",
+			ui: {},
+			sessionManager: { getSessionFile: () => "/tmp/project/session.jsonl" },
+		} as any);
+
+		harness.getMonitorOptions()?.onMonitorEvent?.({
+			strategy: "stream",
+			triggerId: "fail",
+			eventType: "fail",
+			matchedText: "FAIL",
+			lineOrDiff: "FAIL first",
+			stream: "pty",
+		});
+		harness.getMonitorOptions()?.onMonitorEvent?.({
+			strategy: "stream",
+			triggerId: "warn",
+			eventType: "warn",
+			matchedText: "WARN",
+			lineOrDiff: "WARN second",
+			stream: "pty",
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		const filtered = await harness.toolDef.execute("call-2", {
+			monitorEvents: true,
+			monitorSessionId: "monitor-1",
+			monitorTriggerId: "warn",
+			monitorSinceEventId: 1,
+		}, undefined, undefined, {
+			hasUI: false,
+			cwd: "/tmp/project",
+			ui: {},
+			sessionManager: { getSessionFile: () => "/tmp/project/session.jsonl" },
+		} as any);
+
+		expect(filtered.isError).not.toBe(true);
+		expect(filtered.details.events).toHaveLength(1);
+		expect(filtered.details.events[0]?.triggerId).toBe("warn");
+		expect(filtered.details.sinceEventId).toBe(1);
+		expect(filtered.details.triggerId).toBe("warn");
+	});
+
+	it("emits monitor lifecycle notification when monitor session completes", async () => {
+		const harness = await setupHarness();
+		await harness.toolDef.execute("call-1", {
+			command: "npm test --watch",
+			mode: "monitor",
+			monitor: {
+				strategy: "stream",
+				triggers: [{ id: "fail", literal: "FAIL" }],
+			},
+		}, undefined, undefined, {
+			hasUI: false,
+			cwd: "/tmp/project",
+			ui: {},
+			sessionManager: { getSessionFile: () => "/tmp/project/session.jsonl" },
+		} as any);
+
+		harness.getMonitorCompleteCallback()?.({ exitCode: 1 });
+		expect(harness.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "interactive-shell-monitor-lifecycle" }),
+			expect.any(Object),
+		);
 	});
 });

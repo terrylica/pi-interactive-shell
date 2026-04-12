@@ -3,7 +3,7 @@ import type { PtyTerminalSession } from "./pty-session.js";
 import type { InteractiveShellConfig } from "./config.js";
 
 export interface MonitorMatchInfo {
-	strategy: "stream" | "poll-diff";
+	strategy: "stream" | "poll-diff" | "file-watch";
 	triggerId: string;
 	eventType: string;
 	matchedText: string;
@@ -18,7 +18,7 @@ export interface MonitorTriggerMatcher {
 }
 
 export interface MonitorRuntimeConfig {
-	strategy: "stream" | "poll-diff";
+	strategy: "stream" | "poll-diff" | "file-watch";
 	triggers: MonitorTriggerMatcher[];
 	pollIntervalMs: number;
 	dedupeExactLine: boolean;
@@ -109,7 +109,7 @@ export class HeadlessDispatchMonitor {
 			if (this.options.autoExitOnQuiet && visible.trim().length > 0) {
 				this.resetQuietTimer();
 			}
-			if (this.options.monitor?.strategy === "stream" && this.options.onMonitorEvent) {
+			if (this.options.monitor?.strategy !== "poll-diff" && this.options.onMonitorEvent) {
 				this.processMonitorData(visible, false);
 			}
 		});
@@ -145,14 +145,14 @@ export class HeadlessDispatchMonitor {
 
 	private emitStreamMatches(line: string): void {
 		const monitor = this.options.monitor;
-		if (!monitor || monitor.strategy !== "stream") return;
+		if (!monitor || monitor.strategy === "poll-diff") return;
 		for (const trigger of monitor.triggers) {
 			const matchedText = trigger.match(line);
 			if (!matchedText) continue;
 			if (!this.canEmitTrigger(trigger.id, trigger.cooldownMs)) continue;
 			if (!this.shouldEmitUnique(trigger.id, line)) continue;
 			this.emitMonitorEvent({
-				strategy: "stream",
+				strategy: monitor.strategy,
 				triggerId: trigger.id,
 				eventType: trigger.id,
 				matchedText,
@@ -297,7 +297,7 @@ export class HeadlessDispatchMonitor {
 
 	private handleCompletion(exitCode: number | null, signal?: number, timedOut?: boolean, cancelled?: boolean): void {
 		if (this._disposed) return;
-		if (this.options.monitor?.strategy === "stream" && this.options.onMonitorEvent) {
+		if (this.options.monitor?.strategy !== "poll-diff" && this.options.onMonitorEvent) {
 			this.processMonitorData("", true);
 		}
 		this._disposed = true;
@@ -319,7 +319,7 @@ export class HeadlessDispatchMonitor {
 
 	handleExternalCompletion(exitCode: number | null, signal?: number, completionOutput?: HeadlessCompletionInfo["completionOutput"]): void {
 		if (this._disposed) return;
-		if (this.options.monitor?.strategy === "stream" && this.options.onMonitorEvent) {
+		if (this.options.monitor?.strategy !== "poll-diff" && this.options.onMonitorEvent) {
 			this.processMonitorData("", true);
 		}
 		this._disposed = true;

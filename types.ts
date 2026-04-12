@@ -48,18 +48,34 @@ export interface HandsFreeUpdate {
 	budgetExhausted?: boolean;
 }
 
-export type MonitorStrategy = "stream" | "poll-diff";
+export type MonitorStrategy = "stream" | "poll-diff" | "file-watch";
+
+export type MonitorThresholdOperator = "lt" | "lte" | "gt" | "gte";
+
+export interface MonitorThresholdConfig {
+	captureGroup: number;
+	op: MonitorThresholdOperator;
+	value: number;
+}
 
 export interface MonitorTriggerConfig {
 	id: string;
 	literal?: string;
 	regex?: string;
 	cooldownMs?: number;
+	threshold?: MonitorThresholdConfig;
+}
+
+export interface MonitorFileWatchConfig {
+	path: string;
+	recursive?: boolean;
+	events?: Array<"rename" | "change">;
 }
 
 export interface MonitorConfig {
 	strategy?: MonitorStrategy;
 	triggers: MonitorTriggerConfig[];
+	fileWatch?: MonitorFileWatchConfig;
 	poll?: {
 		intervalMs?: number;
 	};
@@ -87,6 +103,24 @@ export interface MonitorEventPayload {
 	matchedText: string;
 	lineOrDiff: string;
 	stream: "pty";
+}
+
+export type MonitorTerminalReason = "stream-ended" | "script-failed" | "stopped" | "timed-out";
+
+export interface MonitorSessionState {
+	sessionId: string;
+	strategy: MonitorStrategy;
+	triggerIds: string[];
+	status: "running" | "stopped";
+	eventCount: number;
+	startedAt: string;
+	lastEventId?: number;
+	lastEventAt?: string;
+	lastTriggerId?: string;
+	endedAt?: string;
+	terminalReason?: MonitorTerminalReason;
+	exitCode?: number | null;
+	signal?: number;
 }
 
 /** Options for starting or reattaching an interactive shell session. */

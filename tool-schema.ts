@@ -13,7 +13,7 @@ MODES:
 - interactive (default): User supervises and controls the session
 - hands-free: Agent monitors with periodic updates, user can take over anytime by typing
 - dispatch: Agent is notified on completion via triggerTurn (no polling needed)
-- monitor: Run in background and wake the agent on structured monitor events (stream or poll-diff)
+- monitor: Run in background and wake the agent on structured monitor events (stream, poll-diff, or file-watch)
 
 RECOMMENDED DEFAULT FOR DELEGATED TASKS:
 - For fire-and-forget delegations and QA-style checks, prefer mode="dispatch".
@@ -53,7 +53,10 @@ QUERYING SESSION STATUS:
 - interactive_shell({ sessionId: "calm-reef", drain: true }) - only NEW output since last query (raw stream)
 - interactive_shell({ sessionId: "calm-reef", kill: true }) - end session
 - interactive_shell({ sessionId: "calm-reef", input: "..." }) - send input
+- interactive_shell({ monitorStatus: true, monitorSessionId: "calm-reef" }) - query monitor lifecycle/state
 - interactive_shell({ monitorEvents: true, monitorSessionId: "calm-reef" }) - query monitor event history
+- interactive_shell({ monitorEvents: true, monitorSessionId: "calm-reef", monitorSinceEventId: 42 }) - fetch events after a cursor
+- interactive_shell({ monitorEvents: true, monitorSessionId: "calm-reef", monitorTriggerId: "error" }) - filter monitor history by trigger id
 - interactive_shell({ monitorEvents: true, monitorSessionId: "calm-reef", monitorEventLimit: 50, monitorEventOffset: 20 }) - paginate monitor history
 
 IMPORTANT: Don't query too frequently! Wait 30-60 seconds between status checks.
@@ -100,6 +103,7 @@ Run a background process and wake the agent on structured monitor triggers:
 - interactive_shell({ command: 'npm test --watch', mode: "monitor", monitor: { strategy: "stream", triggers: [{ id: "fail", literal: "FAIL" }] } })
 - interactive_shell({ command: 'npm run dev', mode: "monitor", monitor: { strategy: "stream", triggers: [{ id: "warn", regex: "/error|warn/i" }] } })
 - interactive_shell({ command: 'curl -sf http://localhost:3000/health', mode: "monitor", monitor: { strategy: "poll-diff", triggers: [{ id: "changed", regex: "/./" }], poll: { intervalMs: 5000 } } })
+- interactive_shell({ mode: "monitor", monitor: { strategy: "file-watch", fileWatch: { path: "./uploads", recursive: true, events: ["rename", "change"] }, triggers: [{ id: "pdf", regex: "/\\.pdf$/i" }] } })
 
 AGENT-INITIATED BACKGROUND:
 Dismiss an existing overlay, keep the process running in background:
@@ -252,7 +256,7 @@ export const toolParameters = Type.Object({
 			Type.Literal("dispatch"),
 			Type.Literal("monitor"),
 		], {
-			description: "Mode: 'interactive' (default, user controls), 'hands-free' (agent monitors, user can take over), 'dispatch' (agent notified on completion, no polling needed), or 'monitor' (headless structured event monitor with stream/poll-diff strategies).",
+			description: "Mode: 'interactive' (default, user controls), 'hands-free' (agent monitors, user can take over), 'dispatch' (agent notified on completion, no polling needed), or 'monitor' (headless structured event monitor with stream/poll-diff/file-watch strategies).",
 		}),
 	),
 	monitor: Type.Optional(
@@ -260,17 +264,36 @@ export const toolParameters = Type.Object({
 			strategy: Type.Optional(Type.Union([
 				Type.Literal("stream"),
 				Type.Literal("poll-diff"),
+			Type.Literal("file-watch"),
 			], {
-				description: "Monitor strategy. stream = line-based trigger matching. poll-diff = periodic snapshot diffing.",
+				description: "Monitor strategy. stream = line-based trigger matching. poll-diff = periodic snapshot diffing. file-watch = first-class filesystem watch events.",
 			})),
 			triggers: Type.Array(Type.Object({
 				id: Type.String({ description: "Unique trigger id used in emitted event payloads." }),
 				literal: Type.Optional(Type.String({ description: "Literal substring trigger." })),
 				regex: Type.Optional(Type.String({ description: "Regex trigger string. Supports /pattern/flags format." })),
 				cooldownMs: Type.Optional(Type.Number({ description: "Optional per-trigger cooldown window in ms." })),
+				threshold: Type.Optional(Type.Object({
+					captureGroup: Type.Number({ description: "Regex capture group index parsed as number (requires regex matcher)." }),
+					op: Type.Union([
+						Type.Literal("lt"),
+						Type.Literal("lte"),
+						Type.Literal("gt"),
+						Type.Literal("gte"),
+					], { description: "Threshold operator." }),
+					value: Type.Number({ description: "Threshold numeric value." }),
+				})),
 			}), {
 				description: "Named trigger definitions. Each trigger must define exactly one matcher: literal or regex.",
 			}),
+			fileWatch: Type.Optional(Type.Object({
+				path: Type.String({ description: "Path to watch for strategy='file-watch'. Relative paths resolve from cwd." }),
+				recursive: Type.Optional(Type.Boolean({ description: "Watch subdirectories recursively (platform-dependent support)." })),
+				events: Type.Optional(Type.Array(Type.Union([
+					Type.Literal("rename"),
+					Type.Literal("change"),
+				]), { description: "Filesystem event names to emit." })),
+			})),
 			poll: Type.Optional(Type.Object({
 				intervalMs: Type.Optional(Type.Number({ description: "Poll interval in ms for strategy='poll-diff' (default: 5000)." })),
 			})),
@@ -310,6 +333,11 @@ export const toolParameters = Type.Object({
 			description: "Dismiss background sessions. true = all, string = specific session ID. Kills running sessions, removes exited ones.",
 		}),
 	),
+	monitorStatus: Type.Optional(
+		Type.Boolean({
+			description: "Query monitor lifecycle/state summary. Requires monitorSessionId or sessionId.",
+		}),
+	),
 	monitorEvents: Type.Optional(
 		Type.Boolean({
 			description: "Query structured monitor event history instead of session output. Requires monitorSessionId or sessionId.",
@@ -317,7 +345,7 @@ export const toolParameters = Type.Object({
 	),
 	monitorSessionId: Type.Optional(
 		Type.String({
-			description: "Target monitor session for monitorEvents queries.",
+			description: "Target monitor session for monitorStatus/monitorEvents queries.",
 		}),
 	),
 	monitorEventLimit: Type.Optional(
@@ -328,6 +356,16 @@ export const toolParameters = Type.Object({
 	monitorEventOffset: Type.Optional(
 		Type.Number({
 			description: "How many newest monitor events to skip before returning results (default: 0).",
+		}),
+	),
+	monitorSinceEventId: Type.Optional(
+		Type.Number({
+			description: "Only return monitor events with eventId greater than this cursor.",
+		}),
+	),
+	monitorTriggerId: Type.Optional(
+		Type.String({
+			description: "Filter monitor events to a specific trigger id.",
 		}),
 	),
 	handsFree: Type.Optional(
@@ -405,8 +443,15 @@ export interface ToolParams {
 	mode?: "interactive" | "hands-free" | "dispatch" | "monitor";
 	background?: boolean;
 	monitor?: {
-		strategy?: "stream" | "poll-diff";
-		triggers: Array<{ id: string; literal?: string; regex?: string; cooldownMs?: number }>;
+		strategy?: "stream" | "poll-diff" | "file-watch";
+		triggers: Array<{
+			id: string;
+			literal?: string;
+			regex?: string;
+			cooldownMs?: number;
+			threshold?: { captureGroup: number; op: "lt" | "lte" | "gt" | "gte"; value: number };
+		}>;
+		fileWatch?: { path: string; recursive?: boolean; events?: Array<"rename" | "change"> };
 		poll?: { intervalMs?: number };
 		persistence?: { stopAfterFirstEvent?: boolean; maxEvents?: number };
 		throttle?: { dedupeExactLine?: boolean; cooldownMs?: number };
@@ -415,10 +460,13 @@ export interface ToolParams {
 	attach?: string;
 	listBackground?: boolean;
 	dismissBackground?: boolean | string;
+	monitorStatus?: boolean;
 	monitorEvents?: boolean;
 	monitorSessionId?: string;
 	monitorEventLimit?: number;
 	monitorEventOffset?: number;
+	monitorSinceEventId?: number;
+	monitorTriggerId?: string;
 	handsFree?: {
 		updateMode?: "on-quiet" | "interval";
 		updateInterval?: number;

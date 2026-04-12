@@ -9,7 +9,10 @@ import type {
 	InteractiveShellResult,
 	MonitorConfig,
 	MonitorEventPayload,
+	MonitorFileWatchConfig,
 	MonitorStrategy,
+	MonitorTerminalReason,
+	MonitorThresholdOperator,
 	MonitorTriggerConfig,
 } from "./types.js";
 import { sessionManager, generateSessionId } from "./session-manager.js";
@@ -26,7 +29,7 @@ import type {
 	MonitorTriggerMatcher,
 } from "./headless-monitor.js";
 import { setupBackgroundWidget } from "./background-widget.js";
-import { buildDispatchNotification, buildHandsFreeUpdateMessage, buildMonitorEventNotification, buildResultNotification, summarizeInteractiveResult } from "./notification-utils.js";
+import { buildDispatchNotification, buildHandsFreeUpdateMessage, buildMonitorEventNotification, buildMonitorLifecycleNotification, buildResultNotification, summarizeInteractiveResult } from "./notification-utils.js";
 import { createSessionQueryState, getSessionOutput } from "./session-query.js";
 import { InteractiveShellCoordinator } from "./runtime-coordinator.js";
 import { spawn as spawnChildProcess } from "node:child_process";
@@ -73,8 +76,32 @@ function makeMonitorCompletionCallback(
 	};
 }
 
-function makeSilentMonitorCompletionCallback(id: string): (info: HeadlessCompletionInfo) => void {
-	return () => {
+function resolveMonitorTerminalReason(info: HeadlessCompletionInfo, override?: MonitorTerminalReason): MonitorTerminalReason {
+	if (override) return override;
+	if (info.timedOut) return "timed-out";
+	if (info.cancelled) return "stopped";
+	if (info.exitCode === 0) return "stream-ended";
+	return "script-failed";
+}
+
+function makeStructuredMonitorCompletionCallback(
+	pi: ExtensionAPI,
+	id: string,
+): (info: HeadlessCompletionInfo) => void {
+	return (info) => {
+		const reason = resolveMonitorTerminalReason(info, coordinator.consumePendingMonitorReason(id));
+		const state = coordinator.finalizeMonitorSession(id, { exitCode: info.exitCode, signal: info.signal }, reason);
+		const wasAgentHandled = coordinator.consumeAgentHandledCompletion(id);
+		if (!wasAgentHandled && state) {
+			const content = buildMonitorLifecycleNotification(state);
+			pi.sendMessage({
+				customType: "interactive-shell-monitor-lifecycle",
+				content,
+				display: true,
+				details: { sessionId: id, state, completion: info },
+			}, { triggerTurn: true });
+			pi.events.emit("interactive-shell:monitor-lifecycle", { sessionId: id, state, completion: info });
+		}
 		sessionManager.unregisterActive(id, false);
 		coordinator.deleteMonitor(id);
 		scheduleMonitorHistoryCleanup(id);
@@ -88,6 +115,7 @@ type CompiledMonitorConfig = {
 		stopAfterFirstEvent: boolean;
 		maxEvents?: number;
 	};
+	fileWatch?: Required<MonitorFileWatchConfig>;
 	detector?: {
 		detectorCommand: string;
 		timeoutMs: number;
@@ -111,6 +139,52 @@ function buildPollDiffLoopCommand(command: string, intervalMs: number): string {
 	const seconds = Math.max(0.25, intervalMs / 1000);
 	const roundedSeconds = Number(seconds.toFixed(3));
 	return `while true; do ${command}; sleep ${roundedSeconds}; done`;
+}
+
+function shellQuote(value: string): string {
+	if (process.platform === "win32") {
+		return `"${value.replace(/"/g, '""')}"`;
+	}
+	return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+function buildFileWatchCommand(fileWatch: Required<MonitorFileWatchConfig>): string {
+	const script = `
+const fs = require("node:fs");
+const watchPath = process.argv[1];
+const recursive = process.argv[2] === "1";
+const allowed = new Set((process.argv[3] || "rename,change").split(",").filter(Boolean));
+function emit(eventType, filename) {
+  if (!allowed.has(eventType)) return;
+  const name = filename ? String(filename) : ".";
+  process.stdout.write(eventType.toUpperCase() + " " + name + "\\n");
+}
+let watcher;
+try {
+  watcher = fs.watch(watchPath, { recursive }, (eventType, filename) => emit(eventType, filename));
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error("file-watch failed: " + message);
+  process.exit(1);
+}
+watcher.on("error", (error) => {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error("file-watch error: " + message);
+  process.exit(1);
+});
+process.stdin.resume();
+`.trim();
+
+	const encoded = Buffer.from(script, "utf8").toString("base64");
+	const eventCsv = fileWatch.events.join(",");
+	return `${shellQuote(process.execPath)} -e "eval(Buffer.from('${encoded}','base64').toString('utf8'))" ${shellQuote(fileWatch.path)} ${fileWatch.recursive ? "1" : "0"} ${shellQuote(eventCsv)}`;
+}
+
+function compareThreshold(value: number, op: MonitorThresholdOperator, expected: number): boolean {
+	if (op === "lt") return value < expected;
+	if (op === "lte") return value <= expected;
+	if (op === "gt") return value > expected;
+	return value >= expected;
 }
 
 function parseRegexPattern(value: string): { ok: true; regex: RegExp } | { ok: false; error: string } {
@@ -154,6 +228,10 @@ function compileMonitorTrigger(trigger: MonitorTriggerConfig, index: number):
 		return { ok: false, error: `monitor.triggers[${index}] must define exactly one matcher: literal or regex.` };
 	}
 
+	if (trigger.threshold && !hasRegex) {
+		return { ok: false, error: `monitor.triggers[${index}].threshold requires regex matcher.` };
+	}
+
 	if (hasLiteral) {
 		const literal = trigger.literal!.trim();
 		if (!literal) {
@@ -177,6 +255,20 @@ function compileMonitorTrigger(trigger: MonitorTriggerConfig, index: number):
 	if (!parsed.ok) {
 		return { ok: false, error: `monitor.triggers[${index}].regex ${parsed.error}` };
 	}
+
+	const threshold = trigger.threshold;
+	if (threshold) {
+		if (!Number.isInteger(threshold.captureGroup) || threshold.captureGroup < 1) {
+			return { ok: false, error: `monitor.triggers[${index}].threshold.captureGroup must be an integer >= 1.` };
+		}
+		if (!["lt", "lte", "gt", "gte"].includes(threshold.op)) {
+			return { ok: false, error: `monitor.triggers[${index}].threshold.op must be one of: lt, lte, gt, gte.` };
+		}
+		if (!Number.isFinite(threshold.value)) {
+			return { ok: false, error: `monitor.triggers[${index}].threshold.value must be a finite number.` };
+		}
+	}
+
 	return {
 		ok: true,
 		compiled: {
@@ -185,7 +277,14 @@ function compileMonitorTrigger(trigger: MonitorTriggerConfig, index: number):
 			match: (input: string) => {
 				parsed.regex.lastIndex = 0;
 				const match = parsed.regex.exec(input);
-				return match?.[0];
+				if (!match) return undefined;
+				if (!threshold) return match[0];
+				const captured = match[threshold.captureGroup];
+				if (captured === undefined) return undefined;
+				const numeric = Number(captured);
+				if (!Number.isFinite(numeric)) return undefined;
+				if (!compareThreshold(numeric, threshold.op, threshold.value)) return undefined;
+				return match[0];
 			},
 		},
 	};
@@ -199,7 +298,7 @@ function compileMonitorConfig(raw: MonitorConfig | undefined):
 	}
 
 	const strategy: MonitorStrategy = raw.strategy ?? "stream";
-	if (strategy !== "stream" && strategy !== "poll-diff") {
+	if (strategy !== "stream" && strategy !== "poll-diff" && strategy !== "file-watch") {
 		return { ok: false, error: `Unsupported monitor.strategy: ${String(raw.strategy)}` };
 	}
 
@@ -218,6 +317,37 @@ function compileMonitorConfig(raw: MonitorConfig | undefined):
 		}
 		ids.add(compiled.compiled.id);
 		compiledTriggers.push(compiled.compiled);
+	}
+
+	let fileWatch: Required<MonitorFileWatchConfig> | undefined;
+	if (strategy === "file-watch") {
+		if (!raw.fileWatch) {
+			return { ok: false, error: "monitor.fileWatch is required when monitor.strategy='file-watch'." };
+		}
+		const watchPath = raw.fileWatch.path?.trim();
+		if (!watchPath) {
+			return { ok: false, error: "monitor.fileWatch.path must be a non-empty string." };
+		}
+		const watchEvents = raw.fileWatch.events ?? ["rename", "change"];
+		if (!Array.isArray(watchEvents) || watchEvents.length === 0) {
+			return { ok: false, error: "monitor.fileWatch.events must contain at least one event." };
+		}
+		for (const eventName of watchEvents) {
+			if (eventName !== "rename" && eventName !== "change") {
+				return { ok: false, error: `Unsupported monitor.fileWatch event: ${String(eventName)}. Use 'rename' or 'change'.` };
+			}
+		}
+		fileWatch = {
+			path: watchPath,
+			recursive: raw.fileWatch.recursive === true,
+			events: Array.from(new Set(watchEvents)),
+		};
+	} else if (raw.fileWatch) {
+		return { ok: false, error: "monitor.fileWatch is only valid when monitor.strategy='file-watch'." };
+	}
+
+	if (strategy !== "poll-diff" && raw.poll) {
+		return { ok: false, error: "monitor.poll is only valid when monitor.strategy='poll-diff'." };
 	}
 
 	const pollIntervalMs = Math.max(250, Math.trunc(raw.poll?.intervalMs ?? 5000));
@@ -241,7 +371,8 @@ function compileMonitorConfig(raw: MonitorConfig | undefined):
 	const publicConfig: MonitorConfig = {
 		strategy,
 		triggers: raw.triggers,
-		poll: { intervalMs: pollIntervalMs },
+		fileWatch,
+		poll: strategy === "poll-diff" ? { intervalMs: pollIntervalMs } : undefined,
 		persistence: {
 			stopAfterFirstEvent,
 			maxEvents,
@@ -272,6 +403,7 @@ function compileMonitorConfig(raw: MonitorConfig | undefined):
 				stopAfterFirstEvent,
 				maxEvents,
 			},
+			fileWatch,
 			detector,
 			publicConfig,
 		},
@@ -408,8 +540,8 @@ function makeMonitorEventCallback(
 			emitted += 1;
 			if (config.persistence.stopAfterFirstEvent || (config.persistence.maxEvents !== undefined && emitted >= config.persistence.maxEvents)) {
 				stopped = true;
-				const active = sessionManager.getActive(sessionId);
-				active?.kill();
+				coordinator.markMonitorStopping(sessionId, "stopped");
+				sessionManager.getActive(sessionId)?.kill();
 			}
 		}).catch((error) => {
 			console.error(`interactive-shell: monitor callback queue error for ${sessionId}:`, error);
@@ -437,6 +569,15 @@ function registerHeadlessActive(
 		reason,
 		write: (data) => session.write(data),
 		kill: () => {
+			const monitorState = coordinator.getMonitorSessionState(id);
+			if (monitorState?.status === "running") {
+				coordinator.markMonitorStopping(id, "stopped");
+			}
+			const liveMonitor = coordinator.getMonitor(id);
+			if (liveMonitor && !liveMonitor.disposed) {
+				session.kill();
+				return;
+			}
 			coordinator.disposeMonitor(id);
 			scheduleMonitorHistoryCleanup(id);
 			sessionManager.remove(id);
@@ -590,7 +731,8 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 		onUpdate?: (update: { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }) => void;
 	}): Promise<{ content: Array<{ type: "text"; text: string }>; details?: any; isError?: boolean }> => {
 		const { ctx, command, spawn, cwd, name, reason, mode, background, handsFree, handoffPreview, handoffSnapshot, timeout, monitor, onUpdate } = params;
-		if (!command && !spawn) {
+		const allowsGeneratedCommand = mode === "monitor" && monitor?.strategy === "file-watch";
+		if (!command && !spawn && !allowsGeneratedCommand) {
 			return {
 				content: [{ type: "text", text: "One of 'command' or 'spawn' is required." }],
 				isError: true,
@@ -647,7 +789,8 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 			spawnAgent = resolvedSpawn.spawn.agent;
 			spawnMode = resolvedSpawn.spawn.mode;
 		}
-		if (!effectiveCommand) {
+		const expectsGeneratedCommand = isMonitorMode && monitor?.strategy === "file-watch";
+		if (!effectiveCommand && !expectsGeneratedCommand) {
 			return {
 				content: [{ type: "text", text: "Failed to resolve the command to launch." }],
 				isError: true,
@@ -664,15 +807,21 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 			}
 
 			const id = generateSessionId(name);
+			const sessionCommand = compiledMonitor.compiled.runtime.strategy === "file-watch"
+				? `file-watch ${compiledMonitor.compiled.fileWatch?.path ?? "<unknown>"}`
+				: effectiveCommand!;
 			const monitorCommand = compiledMonitor.compiled.runtime.strategy === "poll-diff"
-				? buildPollDiffLoopCommand(effectiveCommand, compiledMonitor.compiled.runtime.pollIntervalMs)
-				: effectiveCommand;
+				? buildPollDiffLoopCommand(sessionCommand, compiledMonitor.compiled.runtime.pollIntervalMs)
+				: compiledMonitor.compiled.runtime.strategy === "file-watch"
+					? buildFileWatchCommand(compiledMonitor.compiled.fileWatch!)
+					: sessionCommand;
 			const session = new PtyTerminalSession(
 				{ command: monitorCommand, cwd: effectiveCwd, cols: 120, rows: 40, scrollback: config.scrollbackLines },
 			);
 			const startTime = Date.now();
-			sessionManager.add(effectiveCommand, session, name, effectiveReason, { id, noAutoCleanup: true, startedAt: new Date(startTime) });
+			sessionManager.add(sessionCommand, session, name, effectiveReason, { id, noAutoCleanup: true, startedAt: new Date(startTime) });
 
+			coordinator.registerMonitorSession(id, compiledMonitor.compiled.publicConfig, new Date(startTime));
 			const monitorRunner = new HeadlessDispatchMonitor(session, config, {
 				autoExitOnQuiet: handsFree?.autoExitOnQuiet === true,
 				quietThreshold: handsFree?.quietThreshold ?? config.handsFreeQuietThreshold,
@@ -681,8 +830,8 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 				startedAt: startTime,
 				monitor: compiledMonitor.compiled.runtime,
 				onMonitorEvent: makeMonitorEventCallback(pi, id, compiledMonitor.compiled, effectiveCwd),
-			}, makeSilentMonitorCompletionCallback(id));
-			registerHeadlessActive(id, effectiveCommand, effectiveReason, session, monitorRunner, startTime, config, "monitoring");
+			}, makeStructuredMonitorCompletionCallback(pi, id));
+			registerHeadlessActive(id, sessionCommand, effectiveReason, session, monitorRunner, startTime, config, "monitoring");
 
 			return {
 				content: [{ type: "text", text: appendWorktreeNotice(`Monitor started in background (id: ${id}).\nStrategy: ${compiledMonitor.compiled.publicConfig.strategy ?? "stream"}\nTriggers: ${compiledMonitor.compiled.publicConfig.triggers.map((trigger) => trigger.id).join(", ")}\nYou'll be notified when a trigger emits an event.`, spawnWorktreePath) }],
@@ -889,7 +1038,7 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_start", (_event, ctx) => {
-		coordinator.replaceBackgroundWidgetCleanup(setupBackgroundWidget(ctx, sessionManager));
+		coordinator.replaceBackgroundWidgetCleanup(setupBackgroundWidget(ctx, sessionManager, coordinator));
 		terminalInputCleanup?.();
 		terminalInputCleanup = ctx.ui.onTerminalInput((data) => {
 			if (!coordinator.isOverlayOpen()) return undefined;
@@ -954,9 +1103,12 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 				listBackground,
 				dismissBackground,
 				monitorEvents,
+				monitorStatus,
 				monitorSessionId,
 				monitorEventLimit,
 				monitorEventOffset,
+				monitorSinceEventId,
+				monitorTriggerId,
 				handsFree,
 				handoffPreview,
 				handoffSnapshot,
@@ -975,7 +1127,7 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 					isError: true,
 				};
 			}
-			if (spawn && (sessionId || attach || listBackground || dismissBackground || monitorEvents)) {
+			if (spawn && (sessionId || attach || listBackground || dismissBackground || monitorEvents || monitorStatus)) {
 				return {
 					content: [{ type: "text", text: "'spawn' is only valid when starting a new session." }],
 					isError: true,
@@ -986,6 +1138,40 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 				return {
 					content: [{ type: "text", text: "monitorFilter was removed. Use mode='monitor' with a structured monitor object." }],
 					isError: true,
+				};
+			}
+
+			if (monitorStatus) {
+				const targetMonitorSessionId = monitorSessionId ?? sessionId;
+				if (!targetMonitorSessionId) {
+					return {
+						content: [{ type: "text", text: "monitorStatus requires monitorSessionId (or sessionId)." }],
+						isError: true,
+					};
+				}
+
+				const state = coordinator.getMonitorSessionState(targetMonitorSessionId);
+				if (!state) {
+					return {
+						content: [{ type: "text", text: `No monitor state for session ${targetMonitorSessionId}.` }],
+						details: { sessionId: targetMonitorSessionId, state: null },
+					};
+				}
+
+				const summary = [
+					`Monitor state for ${targetMonitorSessionId}`,
+					`Status: ${state.status}`,
+					`Strategy: ${state.strategy}`,
+					`Triggers: ${state.triggerIds.join(", ") || "(none)"}`,
+					`Events: ${state.eventCount}`,
+					`Started: ${state.startedAt}`,
+					state.lastEventAt ? `Last event: #${state.lastEventId} at ${state.lastEventAt}` : "Last event: none",
+					state.terminalReason ? `Terminal reason: ${state.terminalReason}` : "Terminal reason: (running)",
+				].join("\n");
+
+				return {
+					content: [{ type: "text", text: summary }],
+					details: { sessionId: targetMonitorSessionId, state },
 				};
 			}
 
@@ -1001,11 +1187,23 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 				const history = coordinator.getMonitorEvents(targetMonitorSessionId, {
 					limit: monitorEventLimit,
 					offset: monitorEventOffset,
+					sinceEventId: monitorSinceEventId,
+					triggerId: monitorTriggerId,
 				});
+				const state = coordinator.getMonitorSessionState(targetMonitorSessionId);
 				if (history.total === 0) {
 					return {
 						content: [{ type: "text", text: `No monitor events for session ${targetMonitorSessionId}.` }],
-						details: { sessionId: targetMonitorSessionId, events: [], total: 0, limit: history.limit, offset: history.offset },
+						details: {
+							sessionId: targetMonitorSessionId,
+							events: [],
+							total: 0,
+							limit: history.limit,
+							offset: history.offset,
+							sinceEventId: history.sinceEventId,
+							triggerId: history.triggerId,
+							state,
+						},
 					};
 				}
 
@@ -1023,6 +1221,9 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 						total: history.total,
 						limit: history.limit,
 						offset: history.offset,
+						sinceEventId: history.sinceEventId,
+						triggerId: history.triggerId,
+						state,
 					},
 				};
 			}
@@ -1359,10 +1560,14 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 					return { content: [{ type: "text", text: "No background sessions." }] };
 				}
 				const lines = sessions.map(s => {
+					const monitorState = coordinator.getMonitorSessionState(s.id);
 					const status = s.session.exited ? "exited" : "running";
 					const duration = formatDuration(Date.now() - s.startedAt.getTime());
 					const r = s.reason ? ` \u2022 ${s.reason}` : "";
-					return `  ${s.id} - ${s.command}${r} (${status}, ${duration})`;
+					const monitorLabel = monitorState
+						? ` \u2022 monitor:${monitorState.strategy} events=${monitorState.eventCount}${monitorState.lastEventAt ? ` last=${monitorState.lastEventAt}` : ""}`
+						: "";
+					return `  ${s.id} - ${s.command}${r}${monitorLabel} (${status}, ${duration})`;
 				});
 				return { content: [{ type: "text", text: `Background sessions:\n${lines.join("\n")}` }] };
 			}
@@ -1397,7 +1602,8 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 			}
 
 			// ── Branch 4: Start new session ──
-			if (!command && !spawn) {
+			const allowsGeneratedCommand = mode === "monitor" && monitor?.strategy === "file-watch";
+			if (!command && !spawn && !allowsGeneratedCommand) {
 				return {
 					content: [{ type: "text", text: "One of 'command', 'spawn', 'sessionId', 'attach', 'listBackground', or 'dismissBackground' is required." }],
 					isError: true,

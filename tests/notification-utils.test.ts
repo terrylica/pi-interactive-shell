@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildDispatchNotification, buildHandsFreeUpdateMessage, buildIdlePromptWarning, buildMonitorEventNotification, buildResultNotification } from "../notification-utils.js";
+import { buildDispatchNotification, buildHandsFreeUpdateMessage, buildIdlePromptWarning, buildMonitorEventNotification, buildMonitorLifecycleNotification, buildResultNotification } from "../notification-utils.js";
 
 describe("notification utilities", () => {
 	it("formats compact dispatch notifications with a trimmed tail", () => {
@@ -75,6 +75,27 @@ describe("notification utilities", () => {
 		expect(text).toContain("Trigger: error");
 		expect(text).toContain("Matched: ERROR: failed");
 		expect(text).toContain("Line: ERROR: failed to compile");
+	});
+
+	it("formats monitor lifecycle notifications", () => {
+		const text = buildMonitorLifecycleNotification({
+			sessionId: "calm-reef",
+			strategy: "stream",
+			triggerIds: ["error"],
+			status: "stopped",
+			eventCount: 2,
+			startedAt: "2026-04-12T00:00:00.000Z",
+			lastEventId: 2,
+			lastEventAt: "2026-04-12T00:00:10.000Z",
+			lastTriggerId: "error",
+			terminalReason: "script-failed",
+			exitCode: 1,
+		});
+		expect(text).toContain("Monitor calm-reef script failed.");
+		expect(text).toContain("Strategy: stream");
+		expect(text).toContain("Events: 2");
+		expect(text).toContain("Last event: #2");
+		expect(text).toContain("Exit code: 1");
 	});
 
 	it("warns when reason implies work but command launches an idle agent", () => {

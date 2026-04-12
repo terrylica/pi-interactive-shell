@@ -159,6 +159,35 @@ describe("HeadlessDispatchMonitor", () => {
 		});
 	});
 
+	it("emits file-watch monitor events from line output", () => {
+		const session = createSession();
+		const onMonitorEvent = vi.fn();
+		new HeadlessDispatchMonitor(session, config, {
+			autoExitOnQuiet: false,
+			quietThreshold: 1000,
+			monitor: {
+				strategy: "file-watch",
+				triggers: [{
+					id: "pdf",
+					match: (input) => /\.pdf$/i.test(input) ? input : undefined,
+				}],
+				pollIntervalMs: 5000,
+				dedupeExactLine: true,
+			},
+			onMonitorEvent,
+		}, vi.fn());
+
+		session.emitData("RENAME invoices/acme-0042.pdf\n");
+		expect(onMonitorEvent).toHaveBeenCalledWith({
+			strategy: "file-watch",
+			triggerId: "pdf",
+			eventType: "pdf",
+			matchedText: "RENAME invoices/acme-0042.pdf",
+			lineOrDiff: "RENAME invoices/acme-0042.pdf",
+			stream: "pty",
+		});
+	});
+
 	it("dedupes exact matching lines per trigger within one stream monitor session", () => {
 		const session = createSession();
 		const onMonitorEvent = vi.fn();

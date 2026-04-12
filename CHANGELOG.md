@@ -2,6 +2,22 @@
 
 All notable changes to the `pi-interactive-shell` extension will be documented in this file.
 
+## [Unreleased]
+
+## [0.12.0] - 2026-04-12
+
+### Added
+- Inline threshold trigger support for regex monitors via `threshold: { captureGroup, op, value }` with `lt`, `lte`, `gt`, and `gte` operators.
+- First-class `file-watch` monitor strategy with `monitor.fileWatch` config (`path`, `recursive`, `events`) and compact event lines (`EVENT path`).
+- Monitor lifecycle notifications (`interactive-shell-monitor-lifecycle`) with explicit terminal reasons: `stream-ended`, `script-failed`, `stopped`, and `timed-out`.
+- New monitor query fields: `monitorStatus`, `monitorSinceEventId`, and `monitorTriggerId`.
+
+### Changed
+- Monitor mode now allows generated internal commands for `file-watch`, so users can start file watchers without providing a shell `command`.
+- Monitor validation is now stricter for strategy-specific config (`fileWatch` and `poll` usage) and threshold trigger requirements.
+- Monitor coordinator now tracks per-session monitor state (status, strategy, trigger ids, event count, last event metadata, terminal reason).
+- Background session UI/listing now renders monitor sessions with monitor-specific context (strategy/event count) instead of plain generic running/exited labels.
+
 ## [0.11.1] - 2026-04-12
 
 ### Changed

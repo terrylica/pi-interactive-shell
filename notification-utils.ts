@@ -1,4 +1,4 @@
-import type { InteractiveShellResult, HandsFreeUpdate, MonitorEventPayload } from "./types.js";
+import type { InteractiveShellResult, HandsFreeUpdate, MonitorEventPayload, MonitorSessionState } from "./types.js";
 import type { HeadlessCompletionInfo } from "./headless-monitor.js";
 import { formatDurationMs } from "./types.js";
 
@@ -34,6 +34,36 @@ export function buildMonitorEventNotification(event: MonitorEventPayload): strin
 		`Matched: ${event.matchedText}`,
 		`${event.strategy === "poll-diff" ? "Diff" : "Line"}: ${event.lineOrDiff}`,
 	].join("\n");
+}
+
+export function buildMonitorLifecycleNotification(state: MonitorSessionState): string {
+	const reason = state.terminalReason ?? "stopped";
+	let headline: string;
+	if (reason === "stream-ended") {
+		headline = `Monitor ${state.sessionId} stream ended.`;
+	} else if (reason === "timed-out") {
+		headline = `Monitor ${state.sessionId} timed out.`;
+	} else if (reason === "script-failed") {
+		headline = `Monitor ${state.sessionId} script failed.`;
+	} else {
+		headline = `Monitor ${state.sessionId} stopped.`;
+	}
+
+	const details: string[] = [
+		headline,
+		`Strategy: ${state.strategy}`,
+		`Events: ${state.eventCount}`,
+		state.lastEventAt ? `Last event: #${state.lastEventId} at ${state.lastEventAt}` : "Last event: none",
+	];
+
+	if (state.exitCode !== undefined && state.exitCode !== null) {
+		details.push(`Exit code: ${state.exitCode}`);
+	}
+	if (state.signal !== undefined) {
+		details.push(`Signal: ${state.signal}`);
+	}
+
+	return details.join("\n");
 }
 
 export function buildHandsFreeUpdateMessage(update: HandsFreeUpdate): { content: string; details: HandsFreeUpdate } | null {

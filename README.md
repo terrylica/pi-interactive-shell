@@ -49,7 +49,7 @@ The `interactive-shell` skill is automatically symlinked to `~/.pi/agent/skills/
 
 **Dispatch** — Returns immediately. No polling. The agent gets woken up via `triggerTurn` only when the session completes (natural exit, timeout, quiet detection, or user kill). The notification includes a tail of the output. This is the default for delegating work to subagents. Add `background: true` to skip the overlay entirely.
 
-**Monitor** — Returns immediately. No polling, no completion notification. The agent gets woken up when a configured monitor trigger emits an event. Supports stream triggers and poll-diff checks, optional cooldowns, persistence controls, detector commands, and event history queries. Runs headless; attach to inspect if needed.
+**Monitor** — Returns immediately. No polling, no completion notification. The agent gets woken up when a configured monitor trigger emits an event. Supports stream triggers, poll-diff checks, first-class file watching, optional cooldowns, persistence controls, detector commands, and event history queries. Runs headless; attach to inspect if needed.
 
 ## Quick Start
 
@@ -60,11 +60,20 @@ The examples below show agent-side tool calls. They are not chat commands for en
 For Pi, Codex, and Claude, the agent can use structured spawn params instead of building command strings by hand:
 
 ```typescript
+// User says: "Spawn pi so I can edit files interactively"
 interactive_shell({ spawn: { agent: "pi" }, mode: "interactive" })
+
+// User says: "Delegate this refactor to codex and notify me when it's done"
 interactive_shell({ spawn: { agent: "codex" }, mode: "dispatch" })
+
+// User says: "Ask claude to review the diffs in dispatch mode"
 interactive_shell({ spawn: { agent: "claude", prompt: "Review the diffs" }, mode: "dispatch" })
+
+// User says: "Start claude in a worktree for hands-free monitoring"
 interactive_shell({ spawn: { agent: "claude", worktree: true }, mode: "hands-free" })
-interactive_shell({ spawn: { mode: "fork" }, mode: "interactive" }) // Pi-only
+
+// User says: "Fork my current pi session" (Pi-only)
+interactive_shell({ spawn: { mode: "fork" }, mode: "interactive" })
 ```
 
 Structured `spawn` uses the same resolver and config defaults as the user-facing `/spawn` command. Raw `command` is still supported for arbitrary CLIs and custom launch strings.
@@ -72,8 +81,13 @@ Structured `spawn` uses the same resolver and config defaults as the user-facing
 ### Interactive
 
 ```typescript
+// User says: "Open package.json in vim"
 interactive_shell({ command: 'vim package.json' })
+
+// User says: "Connect to the postgres database"
 interactive_shell({ command: 'psql -d mydb' })
+
+// User says: "SSH into the server"
 interactive_shell({ command: 'ssh user@server' })
 ```
 
@@ -90,7 +104,7 @@ interactive_shell({
 })
 // → { sessionId: "calm-reef", status: "running" }
 
-// Poll for output (rate-limited to 60s between queries)
+// User says: "Check on the dev server status"
 interactive_shell({ sessionId: "calm-reef" })
 // → { status: "running", output: "Server ready on :3000", runtime: 45000 }
 
@@ -108,7 +122,7 @@ The overlay opens for the user to watch. The agent checks in periodically. User 
 ### Dispatch
 
 ```typescript
-// Fire off a task
+// User says: "Delegate refactoring the auth module to pi and notify me when done"
 interactive_shell({
   command: 'pi "Refactor the auth module"',
   mode: "dispatch",
@@ -159,7 +173,7 @@ These examples are **agent tool calls**. End users should ask in natural languag
 Wake the agent when monitor triggers emit events — no polling and no waiting for process completion.
 
 ```typescript
-// Stream strategy with multiple named triggers
+// User says: "Watch my tests and alert me on failures or errors"
 interactive_shell({
   command: 'npm test --watch',
   mode: "monitor",
@@ -174,7 +188,7 @@ interactive_shell({
   }
 })
 
-// Poll-diff strategy (default 5s interval)
+// User says: "Monitor the health endpoint and tell me when it changes"
 interactive_shell({
   command: 'curl -sf http://localhost:3000/health',
   mode: "monitor",
@@ -184,12 +198,41 @@ interactive_shell({
     poll: { intervalMs: 5000 }
   }
 })
+
+// User says: "Alert me when NVDA drops below $120"
+interactive_shell({
+  command: 'curl -s https://api.example.com/quote/NVDA',
+  mode: "monitor",
+  monitor: {
+    strategy: "stream",
+    triggers: [
+      {
+        id: "nvda-below-120",
+        regex: "/NVDA:\\s*\\$?(\\d+(?:\\.\\d+)?)/",
+        threshold: { captureGroup: 1, op: "lt", value: 120 }
+      }
+    ]
+  }
+})
+
+// User says: "Watch the uploads folder for new PDF files and notify me"
+interactive_shell({
+  mode: "monitor",
+  monitor: {
+    strategy: "file-watch",
+    fileWatch: { path: "./uploads", recursive: true, events: ["rename", "change"] },
+    triggers: [{ id: "pdf", regex: "/\\.pdf$/i" }]
+  }
+})
 ```
 
-Monitor mode emits structured payloads (`sessionId`, `eventId`, `timestamp`, `strategy`, `triggerId`, `matchedText`, `lineOrDiff`, `stream`) and can be queried later. `monitorFilter` was removed in favor of the structured `monitor` object.
+Monitor mode emits structured payloads (`sessionId`, `eventId`, `timestamp`, `strategy`, `triggerId`, `matchedText`, `lineOrDiff`, `stream`) and now also emits lifecycle notifications when a monitor stops (stream ended, script failed, stopped, or timed out). `monitorFilter` was removed in favor of the structured `monitor` object.
 
 ```typescript
+interactive_shell({ monitorStatus: true, monitorSessionId: "calm-reef" })
 interactive_shell({ monitorEvents: true, monitorSessionId: "calm-reef" })
+interactive_shell({ monitorEvents: true, monitorSessionId: "calm-reef", monitorSinceEventId: 42 })
+interactive_shell({ monitorEvents: true, monitorSessionId: "calm-reef", monitorTriggerId: "error" })
 interactive_shell({ monitorEvents: true, monitorSessionId: "calm-reef", monitorEventLimit: 50, monitorEventOffset: 20 })
 ```
 
@@ -215,7 +258,7 @@ For fire-and-forget single-task delegations, enable auto-exit to kill the sessio
 
 ```typescript
 interactive_shell({
-  command: 'cursor-agent -f "Fix the bug in auth.ts"',
+  command: 'pi "Fix the bug in auth.ts"',
   mode: "hands-free",
   handsFree: { autoExitOnQuiet: true }
 })
