@@ -41,7 +41,7 @@ The `interactive-shell` skill is automatically symlinked to `~/.pi/agent/skills/
 | **Interactive** (default) | Yes — blocks until exit | Tool return value | Editors, REPLs, SSH — when you need the result now |
 | **Hands-free** | No | Poll with `sessionId` | Dev servers, builds — when you want to watch progress and send follow-up commands |
 | **Dispatch** | No | Notification on completion via `triggerTurn` | Delegating tasks to subagents — fire and forget |
-| **Monitor** | No | Notification when a line matches `monitorFilter` | Watchers, logs, tests — wake only when something specific happens |
+| **Monitor** | No | Notification on structured monitor trigger events | Watchers, logs, tests, and state checks — wake only when something specific happens |
 
 **Interactive** — The overlay opens, user controls the session, agent waits for it to close. Use for editors (`vim`), database shells (`psql`), or any task where the agent needs the final result immediately.
 
@@ -49,7 +49,7 @@ The `interactive-shell` skill is automatically symlinked to `~/.pi/agent/skills/
 
 **Dispatch** — Returns immediately. No polling. The agent gets woken up via `triggerTurn` only when the session completes (natural exit, timeout, quiet detection, or user kill). The notification includes a tail of the output. This is the default for delegating work to subagents. Add `background: true` to skip the overlay entirely.
 
-**Monitor** — Returns immediately. No polling, no completion notification. The agent gets woken up only when a cleaned output line matches `monitorFilter`. Use for watching logs or test output for specific events (`FAIL`, `error`, `Compiled successfully`). Runs headless; attach to inspect if needed.
+**Monitor** — Returns immediately. No polling, no completion notification. The agent gets woken up when a configured monitor trigger emits an event. Supports stream triggers and poll-diff checks, optional cooldowns, persistence controls, detector commands, and event history queries. Runs headless; attach to inspect if needed.
 
 ## Quick Start
 
@@ -154,30 +154,44 @@ Multiple headless dispatches can run concurrently alongside a single interactive
 
 ### Monitor (Event-Driven)
 
-Wake the agent immediately when output matches a pattern — no polling, no waiting for completion.
+These examples are **agent tool calls**. End users should ask in natural language (for example: "watch my tests and alert me on failures"), and Pi should invoke `interactive_shell` with the monitor config.
+
+Wake the agent when monitor triggers emit events — no polling and no waiting for process completion.
 
 ```typescript
-// Watch tests for failures
+// Stream strategy with multiple named triggers
 interactive_shell({
   command: 'npm test --watch',
   mode: "monitor",
-  monitorFilter: "FAIL"
+  monitor: {
+    strategy: "stream",
+    triggers: [
+      { id: "failed", literal: "FAIL" },
+      { id: "error", regex: "/error|exception/i" }
+    ],
+    throttle: { dedupeExactLine: true },
+    persistence: { stopAfterFirstEvent: false }
+  }
 })
 
-// Watch dev server for errors (case-insensitive)
+// Poll-diff strategy (default 5s interval)
 interactive_shell({
-  command: 'npm run dev',
+  command: 'curl -sf http://localhost:3000/health',
   mode: "monitor",
-  monitorFilter: "/error|warn/i"
+  monitor: {
+    strategy: "poll-diff",
+    triggers: [{ id: "changed", regex: "/./" }],
+    poll: { intervalMs: 5000 }
+  }
 })
 ```
 
-Monitor mode is for **watching ongoing processes** where you care about specific output patterns, not completion. Unlike dispatch, you get woken up on the **first match**, not when the process exits. Use it for:
-- Test watchers — catch failures as they happen
-- Dev servers — alert on compile errors
-- Log tails — react to specific events
+Monitor mode emits structured payloads (`sessionId`, `eventId`, `timestamp`, `strategy`, `triggerId`, `matchedText`, `lineOrDiff`, `stream`) and can be queried later. `monitorFilter` was removed in favor of the structured `monitor` object.
 
-`monitorFilter` accepts plain text (literal substring) or `/regex/flags`. ANSI escape codes are stripped before matching, so colors don't break your patterns. The notification includes the matched line and the matched text.
+```typescript
+interactive_shell({ monitorEvents: true, monitorSessionId: "calm-reef" })
+interactive_shell({ monitorEvents: true, monitorSessionId: "calm-reef", monitorEventLimit: 50, monitorEventOffset: 20 })
+```
 
 Monitor sessions run headless and can be managed like other background sessions (`listBackground`, `/attach`, `dismissBackground`).
 
@@ -302,7 +316,7 @@ interactive_shell({ dismissBackground: true })               // all sessions
 interactive_shell({ dismissBackground: "calm-reef" })        // specific session
 ```
 
-Monitor sessions work the same way — they're headless background sessions that happen to wake you on matches instead of completion.
+Monitor sessions work the same way — they're headless background sessions that wake you on monitor events instead of completion.
 
 User can also `/spawn` to launch the configured default spawn agent, `/spawn codex`, `/spawn claude`, `/spawn pi`, `/spawn fork`, or `/spawn pi fork`. Add `--worktree` to spawn in a separate git worktree, for example `/spawn codex --worktree` or `/spawn pi fork --worktree`. Plain `/spawn claude` stays a normal interactive overlay. `fork` is Pi-only. Worktrees are left in place and the overlay will tell you where they were created. `/attach` or `/attach <id>` reattaches, and `/dismiss` or `/dismiss <id>` cleans up from the chat. The keyboard spawn shortcut is separate from `/spawn` and uses `spawn.shortcut`.
 

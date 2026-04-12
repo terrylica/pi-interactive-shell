@@ -1,4 +1,4 @@
-import type { InteractiveShellResult, HandsFreeUpdate } from "./types.js";
+import type { InteractiveShellResult, HandsFreeUpdate, MonitorEventPayload } from "./types.js";
 import type { HeadlessCompletionInfo } from "./headless-monitor.js";
 import { formatDurationMs } from "./types.js";
 
@@ -25,8 +25,15 @@ export function buildResultNotification(sessionId: string, result: InteractiveSh
 	return parts.join("");
 }
 
-export function buildMonitorEventNotification(sessionId: string, matchedText: string, line: string): string {
-	return `Monitor Event (${sessionId})\nMatched: ${matchedText}\nLine: ${line}`;
+export function buildMonitorEventNotification(event: MonitorEventPayload): string {
+	return [
+		`Monitor Event (${event.sessionId}) #${event.eventId}`,
+		`Time: ${event.timestamp}`,
+		`Strategy: ${event.strategy}`,
+		`Trigger: ${event.triggerId}`,
+		`Matched: ${event.matchedText}`,
+		`${event.strategy === "poll-diff" ? "Diff" : "Line"}: ${event.lineOrDiff}`,
+	].join("\n");
 }
 
 export function buildHandsFreeUpdateMessage(update: HandsFreeUpdate): { content: string; details: HandsFreeUpdate } | null {

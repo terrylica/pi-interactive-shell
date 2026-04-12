@@ -39,12 +39,14 @@ const config: InteractiveShellConfig = {
 function createSession() {
 	let onData: ((data: string) => void) | null = null;
 	let onExit: ((exitCode: number | null, signal?: number) => void) | null = null;
+	let rawOutput = "";
 	return {
 		exited: false,
 		exitCode: null as number | null,
 		signal: undefined as number | undefined,
 		kill: vi.fn(),
 		getTailLines: vi.fn(() => ({ lines: ["final"], totalLinesInBuffer: 1, truncatedByChars: false })),
+		getRawStream: vi.fn(() => rawOutput),
 		addDataListener(fn: (data: string) => void) {
 			onData = fn;
 			return () => { onData = null; };
@@ -54,6 +56,7 @@ function createSession() {
 			return () => { onExit = null; };
 		},
 		emitData(data: string) {
+			rawOutput += data;
 			onData?.(data);
 		},
 		emitExit(exitCode: number | null, signal?: number) {
@@ -127,39 +130,87 @@ describe("HeadlessDispatchMonitor", () => {
 		expect(monitor.getResult()?.completionOutput?.lines).toEqual(["final"]);
 	});
 
-	it("emits monitor events from ANSI-stripped line output", () => {
+	it("emits stream monitor events from ANSI-stripped line output", () => {
 		const session = createSession();
 		const onMonitorEvent = vi.fn();
 		new HeadlessDispatchMonitor(session, config, {
 			autoExitOnQuiet: false,
 			quietThreshold: 1000,
-			monitorFilter: /ERROR:\s+.+/,
+			monitor: {
+				strategy: "stream",
+				triggers: [{
+					id: "error",
+					match: (input) => /ERROR:\s+.+/.exec(input)?.[0],
+				}],
+				pollIntervalMs: 5000,
+				dedupeExactLine: true,
+			},
 			onMonitorEvent,
 		}, vi.fn());
 
 		session.emitData("\u001b[31mERROR:\u001b[0m failed to compile\n");
 		expect(onMonitorEvent).toHaveBeenCalledWith({
-			line: "ERROR: failed to compile",
+			strategy: "stream",
+			triggerId: "error",
+			eventType: "error",
 			matchedText: "ERROR: failed to compile",
+			lineOrDiff: "ERROR: failed to compile",
+			stream: "pty",
 		});
 	});
 
-	it("dedupes exact matching lines within one monitor session", () => {
+	it("dedupes exact matching lines per trigger within one stream monitor session", () => {
 		const session = createSession();
 		const onMonitorEvent = vi.fn();
 		new HeadlessDispatchMonitor(session, config, {
 			autoExitOnQuiet: false,
 			quietThreshold: 1000,
-			monitorFilter: /Test Files/,
+			monitor: {
+				strategy: "stream",
+				triggers: [{
+					id: "tests",
+					match: (input) => /Test Files/.exec(input)?.[0],
+				}],
+				pollIntervalMs: 5000,
+				dedupeExactLine: true,
+			},
 			onMonitorEvent,
 		}, vi.fn());
 
 		session.emitData("Test Files  1 passed (1)\n");
 		session.emitData("Test Files  1 passed (1)\n");
 		expect(onMonitorEvent).toHaveBeenCalledTimes(1);
-		expect(onMonitorEvent).toHaveBeenCalledWith({
-			line: "Test Files  1 passed (1)",
-			matchedText: "Test Files",
+	});
+
+	it("emits poll-diff events when normalized output changes", () => {
+		const session = createSession();
+		const onMonitorEvent = vi.fn();
+		new HeadlessDispatchMonitor(session, config, {
+			autoExitOnQuiet: false,
+			quietThreshold: 1000,
+			monitor: {
+				strategy: "poll-diff",
+				triggers: [{
+					id: "changed",
+					match: (input) => input.length > 0 ? "changed" : undefined,
+				}],
+				pollIntervalMs: 500,
+				dedupeExactLine: true,
+			},
+			onMonitorEvent,
+		}, vi.fn());
+
+		vi.advanceTimersByTime(500); // establish baseline
+		session.emitData("status=green\n");
+		vi.advanceTimersByTime(500); // changed snapshot
+
+		expect(onMonitorEvent).toHaveBeenCalledTimes(1);
+		expect(onMonitorEvent.mock.calls[0]?.[0]).toMatchObject({
+			strategy: "poll-diff",
+			triggerId: "changed",
+			eventType: "changed",
+			matchedText: "changed",
+			stream: "pty",
 		});
 	});
 });

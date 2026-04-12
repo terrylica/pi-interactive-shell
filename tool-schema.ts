@@ -13,7 +13,7 @@ MODES:
 - interactive (default): User supervises and controls the session
 - hands-free: Agent monitors with periodic updates, user can take over anytime by typing
 - dispatch: Agent is notified on completion via triggerTurn (no polling needed)
-- monitor: Run in background and wake the agent only when output lines match monitorFilter
+- monitor: Run in background and wake the agent on structured monitor events (stream or poll-diff)
 
 RECOMMENDED DEFAULT FOR DELEGATED TASKS:
 - For fire-and-forget delegations and QA-style checks, prefer mode="dispatch".
@@ -53,6 +53,8 @@ QUERYING SESSION STATUS:
 - interactive_shell({ sessionId: "calm-reef", drain: true }) - only NEW output since last query (raw stream)
 - interactive_shell({ sessionId: "calm-reef", kill: true }) - end session
 - interactive_shell({ sessionId: "calm-reef", input: "..." }) - send input
+- interactive_shell({ monitorEvents: true, monitorSessionId: "calm-reef" }) - query monitor event history
+- interactive_shell({ monitorEvents: true, monitorSessionId: "calm-reef", monitorEventLimit: 50, monitorEventOffset: 20 }) - paginate monitor history
 
 IMPORTANT: Don't query too frequently! Wait 30-60 seconds between status checks.
 The user is watching the overlay in real-time - you're just checking in periodically.
@@ -94,9 +96,10 @@ Start a session without any overlay. Process runs headlessly, agent notified on 
 - interactive_shell({ command: 'pi "fix bugs"', mode: "dispatch", background: true })
 
 MONITOR MODE (EVENT-DRIVEN, HEADLESS):
-Run a background process and wake the agent only when a cleaned output line matches monitorFilter:
-- interactive_shell({ command: 'npm test --watch', mode: "monitor", monitorFilter: "FAIL" })
-- interactive_shell({ command: 'npm run dev', mode: "monitor", monitorFilter: "/error|warn/i" })
+Run a background process and wake the agent on structured monitor triggers:
+- interactive_shell({ command: 'npm test --watch', mode: "monitor", monitor: { strategy: "stream", triggers: [{ id: "fail", literal: "FAIL" }] } })
+- interactive_shell({ command: 'npm run dev', mode: "monitor", monitor: { strategy: "stream", triggers: [{ id: "warn", regex: "/error|warn/i" }] } })
+- interactive_shell({ command: 'curl -sf http://localhost:3000/health', mode: "monitor", monitor: { strategy: "poll-diff", triggers: [{ id: "changed", regex: "/./" }], poll: { intervalMs: 5000 } } })
 
 AGENT-INITIATED BACKGROUND:
 Dismiss an existing overlay, keep the process running in background:
@@ -249,12 +252,42 @@ export const toolParameters = Type.Object({
 			Type.Literal("dispatch"),
 			Type.Literal("monitor"),
 		], {
-			description: "Mode: 'interactive' (default, user controls), 'hands-free' (agent monitors, user can take over), 'dispatch' (agent notified on completion, no polling needed), or 'monitor' (background event monitor that wakes the agent only on matching lines).",
+			description: "Mode: 'interactive' (default, user controls), 'hands-free' (agent monitors, user can take over), 'dispatch' (agent notified on completion, no polling needed), or 'monitor' (headless structured event monitor with stream/poll-diff strategies).",
 		}),
 	),
-	monitorFilter: Type.Optional(
-		Type.String({
-			description: "Filter used only in mode='monitor'. Accepts plain text (literal substring match) or /regex/flags. The agent is woken only when a cleaned output line matches this filter.",
+	monitor: Type.Optional(
+		Type.Object({
+			strategy: Type.Optional(Type.Union([
+				Type.Literal("stream"),
+				Type.Literal("poll-diff"),
+			], {
+				description: "Monitor strategy. stream = line-based trigger matching. poll-diff = periodic snapshot diffing.",
+			})),
+			triggers: Type.Array(Type.Object({
+				id: Type.String({ description: "Unique trigger id used in emitted event payloads." }),
+				literal: Type.Optional(Type.String({ description: "Literal substring trigger." })),
+				regex: Type.Optional(Type.String({ description: "Regex trigger string. Supports /pattern/flags format." })),
+				cooldownMs: Type.Optional(Type.Number({ description: "Optional per-trigger cooldown window in ms." })),
+			}), {
+				description: "Named trigger definitions. Each trigger must define exactly one matcher: literal or regex.",
+			}),
+			poll: Type.Optional(Type.Object({
+				intervalMs: Type.Optional(Type.Number({ description: "Poll interval in ms for strategy='poll-diff' (default: 5000)." })),
+			})),
+			persistence: Type.Optional(Type.Object({
+				stopAfterFirstEvent: Type.Optional(Type.Boolean({ description: "Stop monitor after first emitted event." })),
+				maxEvents: Type.Optional(Type.Number({ description: "Maximum emitted events before monitor stops." })),
+			})),
+			throttle: Type.Optional(Type.Object({
+				dedupeExactLine: Type.Optional(Type.Boolean({ description: "Suppress repeated exact line/diff payloads (default: true)." })),
+				cooldownMs: Type.Optional(Type.Number({ description: "Optional global cooldown in ms across triggers." })),
+			})),
+			detector: Type.Optional(Type.Object({
+				detectorCommand: Type.String({ description: "External detector command. Receives JSON candidate event on stdin and returns JSON decision on stdout." }),
+				timeoutMs: Type.Optional(Type.Number({ description: "Detector command timeout in ms (default: 3000)." })),
+			})),
+		}, {
+			description: "Structured monitor configuration required when mode='monitor'.",
 		}),
 	),
 	background: Type.Optional(
@@ -275,6 +308,26 @@ export const toolParameters = Type.Object({
 	dismissBackground: Type.Optional(
 		Type.Union([Type.Boolean(), Type.String()], {
 			description: "Dismiss background sessions. true = all, string = specific session ID. Kills running sessions, removes exited ones.",
+		}),
+	),
+	monitorEvents: Type.Optional(
+		Type.Boolean({
+			description: "Query structured monitor event history instead of session output. Requires monitorSessionId or sessionId.",
+		}),
+	),
+	monitorSessionId: Type.Optional(
+		Type.String({
+			description: "Target monitor session for monitorEvents queries.",
+		}),
+	),
+	monitorEventLimit: Type.Optional(
+		Type.Number({
+			description: "Max monitor events to return (default: 20).",
+		}),
+	),
+	monitorEventOffset: Type.Optional(
+		Type.Number({
+			description: "How many newest monitor events to skip before returning results (default: 0).",
 		}),
 	),
 	handsFree: Type.Optional(
@@ -351,10 +404,21 @@ export interface ToolParams {
 	reason?: string;
 	mode?: "interactive" | "hands-free" | "dispatch" | "monitor";
 	background?: boolean;
-	monitorFilter?: string;
+	monitor?: {
+		strategy?: "stream" | "poll-diff";
+		triggers: Array<{ id: string; literal?: string; regex?: string; cooldownMs?: number }>;
+		poll?: { intervalMs?: number };
+		persistence?: { stopAfterFirstEvent?: boolean; maxEvents?: number };
+		throttle?: { dedupeExactLine?: boolean; cooldownMs?: number };
+		detector?: { detectorCommand: string; timeoutMs?: number };
+	};
 	attach?: string;
 	listBackground?: boolean;
 	dismissBackground?: boolean | string;
+	monitorEvents?: boolean;
+	monitorSessionId?: string;
+	monitorEventLimit?: number;
+	monitorEventOffset?: number;
 	handsFree?: {
 		updateMode?: "on-quiet" | "interval";
 		updateInterval?: number;

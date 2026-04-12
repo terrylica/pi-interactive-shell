@@ -1,13 +1,20 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 type MonitorOptionsCapture = {
-	monitorFilter?: RegExp;
-	onMonitorEvent?: (event: { line: string; matchedText: string }) => void;
+	monitor?: {
+		strategy: "stream" | "poll-diff";
+		triggers: Array<{ id: string; match: (input: string) => string | undefined; cooldownMs?: number }>;
+		pollIntervalMs: number;
+		dedupeExactLine: boolean;
+		cooldownMs?: number;
+	};
+	onMonitorEvent?: (event: unknown) => void | Promise<void>;
 } | null;
 
 async function setupHarness() {
 	let toolDef: any;
 	let monitorOptions: MonitorOptionsCapture = null;
+	let launchedCommand: string | undefined;
 
 	vi.resetModules();
 	vi.doMock("@mariozechner/pi-coding-agent", () => ({
@@ -70,6 +77,9 @@ async function setupHarness() {
 			exited = false;
 			exitCode: number | null = null;
 			signal: number | undefined;
+			constructor(options: { command: string }) {
+				launchedCommand = options.command;
+			}
 			addDataListener(_cb: (data: string) => void) { return () => {}; }
 			addExitListener(_cb: (exitCode: number | null, signal?: number) => void) { return () => {}; }
 			getTailLines() { return { lines: [], totalLinesInBuffer: 0, truncatedByChars: false }; }
@@ -77,6 +87,7 @@ async function setupHarness() {
 			kill() {}
 			setEventHandlers() {}
 			dispose() {}
+			getRawStream() { return ""; }
 		},
 	}));
 	vi.doMock("../headless-monitor.js", () => ({
@@ -132,6 +143,7 @@ async function setupHarness() {
 	return {
 		toolDef,
 		getMonitorOptions: () => monitorOptions,
+		getLaunchedCommand: () => launchedCommand,
 	};
 }
 
@@ -147,7 +159,7 @@ describe("monitor mode", () => {
 		vi.doUnmock("../session-manager.js");
 	});
 
-	it("requires monitorFilter when mode is monitor", async () => {
+	it("requires monitor object when mode is monitor", async () => {
 		const { toolDef } = await setupHarness();
 		const result = await toolDef.execute("call-1", {
 			command: "npm test",
@@ -160,15 +172,18 @@ describe("monitor mode", () => {
 		} as any);
 
 		expect(result.isError).toBe(true);
-		expect(result.content[0].text).toBe("mode='monitor' requires monitorFilter.");
+		expect(result.content[0].text).toBe("mode='monitor' requires monitor configuration.");
 	});
 
-	it("wires monitor event callback for triggerTurn notifications", async () => {
+	it("wires compiled monitor config and callback for monitor mode", async () => {
 		const harness = await setupHarness();
 		const result = await harness.toolDef.execute("call-1", {
 			command: "npm test --watch",
 			mode: "monitor",
-			monitorFilter: "ERROR",
+			monitor: {
+				strategy: "stream",
+				triggers: [{ id: "error", regex: "/ERROR/i" }],
+			},
 		}, undefined, undefined, {
 			hasUI: false,
 			cwd: "/tmp/project",
@@ -178,13 +193,15 @@ describe("monitor mode", () => {
 
 		expect(result.isError).not.toBe(true);
 		expect(result.details.mode).toBe("monitor");
-		expect(harness.getMonitorOptions()?.monitorFilter).toBeInstanceOf(RegExp);
+		expect(result.details.monitor.strategy).toBe("stream");
+		expect(harness.getMonitorOptions()?.monitor?.strategy).toBe("stream");
+		expect(harness.getMonitorOptions()?.monitor?.triggers[0]?.id).toBe("error");
 		expect(typeof harness.getMonitorOptions()?.onMonitorEvent).toBe("function");
 	});
 
-	it("treats slash-prefixed plain strings as literal filters", async () => {
-		const harness = await setupHarness();
-		const result = await harness.toolDef.execute("call-1", {
+	it("rejects legacy monitorFilter usage after hard cutover", async () => {
+		const { toolDef } = await setupHarness();
+		const result = await toolDef.execute("call-1", {
 			command: "tail -f logs/dev.log",
 			mode: "monitor",
 			monitorFilter: "/tmp/log",
@@ -195,7 +212,44 @@ describe("monitor mode", () => {
 			sessionManager: { getSessionFile: () => "/tmp/project/session.jsonl" },
 		} as any);
 
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toContain("monitorFilter was removed");
+	});
+
+	it("requires target session when querying monitorEvents", async () => {
+		const { toolDef } = await setupHarness();
+		const result = await toolDef.execute("call-1", {
+			monitorEvents: true,
+		}, undefined, undefined, {
+			hasUI: false,
+			cwd: "/tmp/project",
+			ui: {},
+			sessionManager: { getSessionFile: () => "/tmp/project/session.jsonl" },
+		} as any);
+
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toContain("monitorEvents requires monitorSessionId");
+	});
+
+	it("wraps poll-diff monitor command into a recurring loop", async () => {
+		const harness = await setupHarness();
+		const result = await harness.toolDef.execute("call-1", {
+			command: "echo health",
+			mode: "monitor",
+			monitor: {
+				strategy: "poll-diff",
+				triggers: [{ id: "changed", regex: "/./" }],
+				poll: { intervalMs: 5000 },
+			},
+		}, undefined, undefined, {
+			hasUI: false,
+			cwd: "/tmp/project",
+			ui: {},
+			sessionManager: { getSessionFile: () => "/tmp/project/session.jsonl" },
+		} as any);
+
 		expect(result.isError).not.toBe(true);
-		expect(harness.getMonitorOptions()?.monitorFilter?.source).toBe("\\/tmp\\/log");
+		expect(harness.getLaunchedCommand()).toContain("while true; do");
+		expect(harness.getLaunchedCommand()).toContain("echo health");
 	});
 });

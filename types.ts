@@ -48,6 +48,47 @@ export interface HandsFreeUpdate {
 	budgetExhausted?: boolean;
 }
 
+export type MonitorStrategy = "stream" | "poll-diff";
+
+export interface MonitorTriggerConfig {
+	id: string;
+	literal?: string;
+	regex?: string;
+	cooldownMs?: number;
+}
+
+export interface MonitorConfig {
+	strategy?: MonitorStrategy;
+	triggers: MonitorTriggerConfig[];
+	poll?: {
+		intervalMs?: number;
+	};
+	persistence?: {
+		stopAfterFirstEvent?: boolean;
+		maxEvents?: number;
+	};
+	throttle?: {
+		dedupeExactLine?: boolean;
+		cooldownMs?: number;
+	};
+	detector?: {
+		detectorCommand: string;
+		timeoutMs?: number;
+	};
+}
+
+export interface MonitorEventPayload {
+	sessionId: string;
+	eventId: number;
+	timestamp: string;
+	strategy: MonitorStrategy;
+	triggerId: string;
+	eventType: string;
+	matchedText: string;
+	lineOrDiff: string;
+	stream: "pty";
+}
+
 /** Options for starting or reattaching an interactive shell session. */
 export interface InteractiveShellOptions {
 	command: string;
@@ -64,6 +105,7 @@ export interface InteractiveShellOptions {
 	handoffSnapshotMaxChars?: number;
 	// Hands-free / dispatch / monitor mode
 	mode?: "interactive" | "hands-free" | "dispatch" | "monitor";
+	monitor?: MonitorConfig;
 	sessionId?: string; // Pre-generated sessionId for non-blocking modes
 	handsFreeUpdateMode?: "on-quiet" | "interval";
 	handsFreeUpdateInterval?: number;

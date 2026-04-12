@@ -2,7 +2,15 @@
 
 All notable changes to the `pi-interactive-shell` extension will be documented in this file.
 
-## [Unreleased]
+## [0.11.1] - 2026-04-12
+
+### Changed
+- Monitor event callback now guards against emitting after the monitor is disposed, preventing stale queued notifications from a dismissed session.
+- Poll-diff strategy now wraps the command in a recurring loop and diffs per-interval samples instead of accumulating full PTY output.
+- Monitor event history cleanup retries until referenced monitor/session/active entries are gone, preventing history leaks from one-shot timers firing too early.
+
+### Fixed
+- Fixed `await` on already-resolved detector command promise (removed unnecessary `await` on non-async return).
 
 ## [0.11.0] - 2026-04-11
 

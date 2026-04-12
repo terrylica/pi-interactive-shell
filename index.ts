@@ -3,23 +3,50 @@ import { isKeyRelease, isKeyRepeat, matchesKey } from "@mariozechner/pi-tui";
 import { InteractiveShellOverlay } from "./overlay-component.js";
 import { ReattachOverlay } from "./reattach-overlay.js";
 import { PtyTerminalSession } from "./pty-session.js";
-import type { InteractiveShellResult, HandsFreeUpdate } from "./types.js";
+import { formatDuration, formatDurationMs } from "./types.js";
+import type {
+	HandsFreeUpdate,
+	InteractiveShellResult,
+	MonitorConfig,
+	MonitorEventPayload,
+	MonitorStrategy,
+	MonitorTriggerConfig,
+} from "./types.js";
 import { sessionManager, generateSessionId } from "./session-manager.js";
 import { loadConfig } from "./config.js";
 import type { InteractiveShellConfig } from "./config.js";
 import { parseSpawnArgs, resolveSpawn, type SpawnRequest } from "./spawn.js";
 import { translateInput } from "./key-encoding.js";
 import { TOOL_NAME, TOOL_LABEL, TOOL_DESCRIPTION, toolParameters, type ToolParams } from "./tool-schema.js";
-import { formatDuration, formatDurationMs } from "./types.js";
 import { HeadlessDispatchMonitor } from "./headless-monitor.js";
-import type { HeadlessCompletionInfo, MonitorMatchInfo } from "./headless-monitor.js";
+import type {
+	HeadlessCompletionInfo,
+	MonitorMatchInfo,
+	MonitorRuntimeConfig,
+	MonitorTriggerMatcher,
+} from "./headless-monitor.js";
 import { setupBackgroundWidget } from "./background-widget.js";
 import { buildDispatchNotification, buildHandsFreeUpdateMessage, buildMonitorEventNotification, buildResultNotification, summarizeInteractiveResult } from "./notification-utils.js";
 import { createSessionQueryState, getSessionOutput } from "./session-query.js";
 import { InteractiveShellCoordinator } from "./runtime-coordinator.js";
+import { spawn as spawnChildProcess } from "node:child_process";
 
 const coordinator = new InteractiveShellCoordinator();
 const SIDE_CHAT_SHORTCUT = "alt+/";
+
+function scheduleMonitorHistoryCleanup(sessionId: string, delayMs = 5 * 60 * 1000): void {
+	const attempt = () => {
+		const stillInUse = Boolean(coordinator.getMonitor(sessionId))
+			|| Boolean(sessionManager.getActive(sessionId))
+			|| sessionManager.list().some((session) => session.id === sessionId);
+		if (stillInUse) {
+			setTimeout(attempt, 30_000);
+			return;
+		}
+		coordinator.clearMonitorEvents(sessionId);
+	};
+	setTimeout(attempt, delayMs);
+}
 
 function makeMonitorCompletionCallback(
 	pi: ExtensionAPI,
@@ -41,6 +68,7 @@ function makeMonitorCompletionCallback(
 		}
 		sessionManager.unregisterActive(id, false);
 		coordinator.deleteMonitor(id);
+		scheduleMonitorHistoryCleanup(id);
 		sessionManager.scheduleCleanup(id, 5 * 60 * 1000);
 	};
 }
@@ -49,64 +77,344 @@ function makeSilentMonitorCompletionCallback(id: string): (info: HeadlessComplet
 	return () => {
 		sessionManager.unregisterActive(id, false);
 		coordinator.deleteMonitor(id);
+		scheduleMonitorHistoryCleanup(id);
 		sessionManager.scheduleCleanup(id, 5 * 60 * 1000);
 	};
+}
+
+type CompiledMonitorConfig = {
+	runtime: MonitorRuntimeConfig;
+	persistence: {
+		stopAfterFirstEvent: boolean;
+		maxEvents?: number;
+	};
+	detector?: {
+		detectorCommand: string;
+		timeoutMs: number;
+	};
+	publicConfig: MonitorConfig;
+};
+
+type DetectorDecision = {
+	emit: boolean;
+	triggerId?: string;
+	eventType?: string;
+	matchedText?: string;
+	lineOrDiff?: string;
+};
+
+function buildPollDiffLoopCommand(command: string, intervalMs: number): string {
+	if (process.platform === "win32") {
+		const seconds = Math.max(1, Math.ceil(intervalMs / 1000));
+		return `for /L %i in (0,0,1) do (${command} & timeout /t ${seconds} /nobreak >nul)`;
+	}
+	const seconds = Math.max(0.25, intervalMs / 1000);
+	const roundedSeconds = Number(seconds.toFixed(3));
+	return `while true; do ${command}; sleep ${roundedSeconds}; done`;
+}
+
+function parseRegexPattern(value: string): { ok: true; regex: RegExp } | { ok: false; error: string } {
+	const trimmed = value.trim();
+	if (!trimmed) {
+		return { ok: false, error: "Regex pattern cannot be empty." };
+	}
+
+	const literal = /^\/(.+)\/([A-Za-z]*)$/.exec(trimmed);
+	let source = trimmed;
+	let flags = "";
+	if (literal) {
+		if (!/^[dgimsuvy]*$/i.test(literal[2])) {
+			return { ok: false, error: `Invalid regex flags: ${literal[2]}` };
+		}
+		source = literal[1];
+		flags = literal[2].replace(/[gy]/gi, "");
+	}
+
+	try {
+		return { ok: true, regex: new RegExp(source, flags) };
+	} catch (error) {
+		if (error instanceof Error) {
+			return { ok: false, error: `Invalid regex '${value}': ${error.message}` };
+		}
+		return { ok: false, error: `Invalid regex '${value}'.` };
+	}
+}
+
+function compileMonitorTrigger(trigger: MonitorTriggerConfig, index: number):
+	| { ok: true; compiled: MonitorTriggerMatcher }
+	| { ok: false; error: string } {
+	const id = trigger.id?.trim();
+	if (!id) {
+		return { ok: false, error: `monitor.triggers[${index}] requires non-empty id.` };
+	}
+
+	const hasLiteral = typeof trigger.literal === "string";
+	const hasRegex = typeof trigger.regex === "string";
+	if ((hasLiteral ? 1 : 0) + (hasRegex ? 1 : 0) !== 1) {
+		return { ok: false, error: `monitor.triggers[${index}] must define exactly one matcher: literal or regex.` };
+	}
+
+	if (hasLiteral) {
+		const literal = trigger.literal!.trim();
+		if (!literal) {
+			return { ok: false, error: `monitor.triggers[${index}].literal cannot be empty.` };
+		}
+		return {
+			ok: true,
+			compiled: {
+				id,
+				cooldownMs: trigger.cooldownMs,
+				match: (input: string) => {
+					const idx = input.indexOf(literal);
+					if (idx === -1) return undefined;
+					return input.slice(idx, idx + literal.length);
+				},
+			},
+		};
+	}
+
+	const parsed = parseRegexPattern(trigger.regex!);
+	if (!parsed.ok) {
+		return { ok: false, error: `monitor.triggers[${index}].regex ${parsed.error}` };
+	}
+	return {
+		ok: true,
+		compiled: {
+			id,
+			cooldownMs: trigger.cooldownMs,
+			match: (input: string) => {
+				parsed.regex.lastIndex = 0;
+				const match = parsed.regex.exec(input);
+				return match?.[0];
+			},
+		},
+	};
+}
+
+function compileMonitorConfig(raw: MonitorConfig | undefined):
+	| { ok: true; compiled: CompiledMonitorConfig }
+	| { ok: false; error: string } {
+	if (!raw) {
+		return { ok: false, error: "mode='monitor' requires monitor configuration." };
+	}
+
+	const strategy: MonitorStrategy = raw.strategy ?? "stream";
+	if (strategy !== "stream" && strategy !== "poll-diff") {
+		return { ok: false, error: `Unsupported monitor.strategy: ${String(raw.strategy)}` };
+	}
+
+	if (!Array.isArray(raw.triggers) || raw.triggers.length === 0) {
+		return { ok: false, error: "monitor.triggers must contain at least one trigger." };
+	}
+
+	const ids = new Set<string>();
+	const compiledTriggers: MonitorTriggerMatcher[] = [];
+	for (let i = 0; i < raw.triggers.length; i++) {
+		const trigger = raw.triggers[i];
+		const compiled = compileMonitorTrigger(trigger, i);
+		if (!compiled.ok) return compiled;
+		if (ids.has(compiled.compiled.id)) {
+			return { ok: false, error: `Duplicate monitor trigger id: ${compiled.compiled.id}` };
+		}
+		ids.add(compiled.compiled.id);
+		compiledTriggers.push(compiled.compiled);
+	}
+
+	const pollIntervalMs = Math.max(250, Math.trunc(raw.poll?.intervalMs ?? 5000));
+	const dedupeExactLine = raw.throttle?.dedupeExactLine !== false;
+	const cooldownMs = raw.throttle?.cooldownMs !== undefined
+		? Math.max(0, Math.trunc(raw.throttle.cooldownMs))
+		: undefined;
+	const stopAfterFirstEvent = raw.persistence?.stopAfterFirstEvent === true;
+	const maxEvents = raw.persistence?.maxEvents !== undefined
+		? Math.max(1, Math.trunc(raw.persistence.maxEvents))
+		: undefined;
+
+	const detectorCommand = raw.detector?.detectorCommand?.trim();
+	const detector = detectorCommand
+		? {
+			detectorCommand,
+			timeoutMs: Math.max(100, Math.trunc(raw.detector?.timeoutMs ?? 3000)),
+		}
+		: undefined;
+
+	const publicConfig: MonitorConfig = {
+		strategy,
+		triggers: raw.triggers,
+		poll: { intervalMs: pollIntervalMs },
+		persistence: {
+			stopAfterFirstEvent,
+			maxEvents,
+		},
+		throttle: {
+			dedupeExactLine,
+			cooldownMs,
+		},
+		detector: detector
+			? {
+				detectorCommand: detector.detectorCommand,
+				timeoutMs: detector.timeoutMs,
+			}
+			: undefined,
+	};
+
+	return {
+		ok: true,
+		compiled: {
+			runtime: {
+				strategy,
+				triggers: compiledTriggers,
+				pollIntervalMs,
+				dedupeExactLine,
+				cooldownMs,
+			},
+			persistence: {
+				stopAfterFirstEvent,
+				maxEvents,
+			},
+			detector,
+			publicConfig,
+		},
+	};
+}
+
+async function runDetectorCommand(
+	detector: NonNullable<CompiledMonitorConfig["detector"]>,
+	candidate: MonitorEventPayload,
+	cwd?: string,
+): Promise<DetectorDecision> {
+	return new Promise<DetectorDecision>((resolve, reject) => {
+		const shell = process.platform === "win32"
+			? (process.env.COMSPEC || "cmd.exe")
+			: (process.env.SHELL || "/bin/sh");
+		const args = process.platform === "win32"
+			? ["/d", "/s", "/c", detector.detectorCommand]
+			: ["-c", detector.detectorCommand];
+
+		const child = spawnChildProcess(shell, args, {
+			cwd,
+			stdio: ["pipe", "pipe", "pipe"],
+			env: process.env,
+		});
+
+		let stdout = "";
+		let stderr = "";
+		const timer = setTimeout(() => {
+			child.kill();
+			reject(new Error(`detectorCommand timed out after ${detector.timeoutMs}ms`));
+		}, detector.timeoutMs);
+
+		child.stdout.setEncoding("utf8");
+		child.stderr.setEncoding("utf8");
+		child.stdout.on("data", (chunk) => { stdout += chunk; });
+		child.stderr.on("data", (chunk) => { stderr += chunk; });
+
+		child.on("error", (error) => {
+			clearTimeout(timer);
+			reject(error);
+		});
+
+		child.on("exit", (code) => {
+			clearTimeout(timer);
+			if (code !== 0) {
+				reject(new Error(`detectorCommand exited with code ${code}${stderr ? `: ${stderr.trim()}` : ""}`));
+				return;
+			}
+			const raw = stdout.trim();
+			if (!raw) {
+				resolve({ emit: true });
+				return;
+			}
+			try {
+				const parsed = JSON.parse(raw) as DetectorDecision | boolean;
+				if (typeof parsed === "boolean") {
+					resolve({ emit: parsed });
+					return;
+				}
+				resolve({
+					emit: parsed.emit !== false,
+					triggerId: parsed.triggerId,
+					eventType: parsed.eventType,
+					matchedText: parsed.matchedText,
+					lineOrDiff: parsed.lineOrDiff,
+				});
+			} catch (error) {
+				reject(new Error(`detectorCommand returned invalid JSON: ${(error as Error).message}`));
+			}
+		});
+
+		child.stdin.write(`${JSON.stringify(candidate)}\n`);
+		child.stdin.end();
+	});
 }
 
 function makeMonitorEventCallback(
 	pi: ExtensionAPI,
 	sessionId: string,
+	config: CompiledMonitorConfig,
+	cwd?: string,
 ): (event: MonitorMatchInfo) => void {
+	let queue = Promise.resolve();
+	let emitted = 0;
+	let stopped = false;
+
 	return (event) => {
-		const content = buildMonitorEventNotification(sessionId, event.matchedText, event.line);
-		pi.sendMessage({
-			customType: "interactive-shell-monitor-event",
-			content,
-			display: true,
-			details: {
+		queue = queue.then(async () => {
+			if (stopped) return;
+			if (!coordinator.getMonitor(sessionId)) {
+				stopped = true;
+				return;
+			}
+
+			let candidate: Omit<MonitorEventPayload, "eventId" | "timestamp"> = {
 				sessionId,
-				eventType: "Monitor Event",
+				strategy: event.strategy,
+				triggerId: event.triggerId,
+				eventType: event.eventType,
 				matchedText: event.matchedText,
-				line: event.line,
-			},
-		}, { triggerTurn: true });
-		pi.events.emit("interactive-shell:monitor-event", {
-			sessionId,
-			eventType: "Monitor Event",
-			matchedText: event.matchedText,
-			line: event.line,
+				lineOrDiff: event.lineOrDiff,
+				stream: event.stream,
+			};
+
+			if (config.detector) {
+				try {
+					const detectorPreview: MonitorEventPayload = {
+						...candidate,
+						eventId: 0,
+						timestamp: new Date().toISOString(),
+					};
+					const decision = await runDetectorCommand(config.detector, detectorPreview, cwd);
+					if (!decision.emit) return;
+					if (decision.triggerId) candidate = { ...candidate, triggerId: decision.triggerId };
+					if (decision.eventType) candidate = { ...candidate, eventType: decision.eventType };
+					if (decision.matchedText) candidate = { ...candidate, matchedText: decision.matchedText };
+					if (decision.lineOrDiff) candidate = { ...candidate, lineOrDiff: decision.lineOrDiff };
+				} catch (error) {
+					console.error(`interactive-shell: detectorCommand failed for ${sessionId}:`, error);
+					return;
+				}
+			}
+
+			const payload = coordinator.recordMonitorEvent(candidate);
+			const content = buildMonitorEventNotification(payload);
+			pi.sendMessage({
+				customType: "interactive-shell-monitor-event",
+				content,
+				display: true,
+				details: payload,
+			}, { triggerTurn: true });
+			pi.events.emit("interactive-shell:monitor-event", payload);
+
+			emitted += 1;
+			if (config.persistence.stopAfterFirstEvent || (config.persistence.maxEvents !== undefined && emitted >= config.persistence.maxEvents)) {
+				stopped = true;
+				const active = sessionManager.getActive(sessionId);
+				active?.kill();
+			}
+		}).catch((error) => {
+			console.error(`interactive-shell: monitor callback queue error for ${sessionId}:`, error);
 		});
 	};
-}
-
-function escapeRegexLiteral(value: string): string {
-	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function parseMonitorFilter(rawFilter: string):
-	| { ok: true; regex: RegExp }
-	| { ok: false; error: string } {
-	const trimmed = rawFilter.trim();
-	if (!trimmed) {
-		return { ok: false, error: "monitorFilter cannot be empty when mode='monitor'." };
-	}
-
-	let pattern = escapeRegexLiteral(trimmed);
-	let flags = "";
-	const regexLiteral = /^\/(.+)\/([A-Za-z]*)$/.exec(trimmed);
-	if (regexLiteral && /^[dgimsuvy]*$/i.test(regexLiteral[2])) {
-		pattern = regexLiteral[1];
-		flags = regexLiteral[2].replace(/[gy]/gi, "");
-	}
-
-	try {
-		return { ok: true, regex: new RegExp(pattern, flags) };
-	} catch (error) {
-		if (error instanceof Error) {
-			return { ok: false, error: `Invalid monitorFilter regex: ${rawFilter} (${error.message})` };
-		}
-		return { ok: false, error: `Invalid monitorFilter regex: ${rawFilter}` };
-	}
 }
 
 function registerHeadlessActive(
@@ -130,6 +438,7 @@ function registerHeadlessActive(
 		write: (data) => session.write(data),
 		kill: () => {
 			coordinator.disposeMonitor(id);
+			scheduleMonitorHistoryCleanup(id);
 			sessionManager.remove(id);
 			sessionManager.unregisterActive(id, true);
 		},
@@ -211,6 +520,7 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 	const disposeStaleMonitor = (id: string, monitor: HeadlessDispatchMonitor | undefined): void => {
 		if (!monitor || monitor.disposed) return;
 		coordinator.disposeMonitor(id);
+		coordinator.clearMonitorEvents(id);
 		sessionManager.unregisterActive(id, false);
 	};
 	const createOverlayUiOptions = (config: InteractiveShellConfig) => ({
@@ -276,10 +586,10 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 		handoffPreview?: ToolParams["handoffPreview"];
 		handoffSnapshot?: ToolParams["handoffSnapshot"];
 		timeout?: number;
-		monitorFilter?: string;
+		monitor?: ToolParams["monitor"];
 		onUpdate?: (update: { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }) => void;
 	}): Promise<{ content: Array<{ type: "text"; text: string }>; details?: any; isError?: boolean }> => {
-		const { ctx, command, spawn, cwd, name, reason, mode, background, handsFree, handoffPreview, handoffSnapshot, timeout, monitorFilter, onUpdate } = params;
+		const { ctx, command, spawn, cwd, name, reason, mode, background, handsFree, handoffPreview, handoffSnapshot, timeout, monitor, onUpdate } = params;
 		if (!command && !spawn) {
 			return {
 				content: [{ type: "text", text: "One of 'command' or 'spawn' is required." }],
@@ -345,41 +655,38 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 		}
 
 		if (isMonitorMode) {
-			if (!monitorFilter) {
+			const compiledMonitor = compileMonitorConfig(monitor);
+			if (!compiledMonitor.ok) {
 				return {
-					content: [{ type: "text", text: "mode='monitor' requires monitorFilter." }],
-					isError: true,
-				};
-			}
-			const parsedFilter = parseMonitorFilter(monitorFilter);
-			if (!parsedFilter.ok) {
-				return {
-					content: [{ type: "text", text: parsedFilter.error }],
+					content: [{ type: "text", text: compiledMonitor.error }],
 					isError: true,
 				};
 			}
 
 			const id = generateSessionId(name);
+			const monitorCommand = compiledMonitor.compiled.runtime.strategy === "poll-diff"
+				? buildPollDiffLoopCommand(effectiveCommand, compiledMonitor.compiled.runtime.pollIntervalMs)
+				: effectiveCommand;
 			const session = new PtyTerminalSession(
-				{ command: effectiveCommand, cwd: effectiveCwd, cols: 120, rows: 40, scrollback: config.scrollbackLines },
+				{ command: monitorCommand, cwd: effectiveCwd, cols: 120, rows: 40, scrollback: config.scrollbackLines },
 			);
 			const startTime = Date.now();
 			sessionManager.add(effectiveCommand, session, name, effectiveReason, { id, noAutoCleanup: true, startedAt: new Date(startTime) });
 
-			const monitor = new HeadlessDispatchMonitor(session, config, {
+			const monitorRunner = new HeadlessDispatchMonitor(session, config, {
 				autoExitOnQuiet: handsFree?.autoExitOnQuiet === true,
 				quietThreshold: handsFree?.quietThreshold ?? config.handsFreeQuietThreshold,
 				gracePeriod: handsFree?.gracePeriod ?? config.autoExitGracePeriod,
 				timeout,
 				startedAt: startTime,
-				monitorFilter: parsedFilter.regex,
-				onMonitorEvent: makeMonitorEventCallback(pi, id),
+				monitor: compiledMonitor.compiled.runtime,
+				onMonitorEvent: makeMonitorEventCallback(pi, id, compiledMonitor.compiled, effectiveCwd),
 			}, makeSilentMonitorCompletionCallback(id));
-			registerHeadlessActive(id, effectiveCommand, effectiveReason, session, monitor, startTime, config, "monitoring");
+			registerHeadlessActive(id, effectiveCommand, effectiveReason, session, monitorRunner, startTime, config, "monitoring");
 
 			return {
-				content: [{ type: "text", text: appendWorktreeNotice(`Monitor started in background (id: ${id}).\nFilter: ${monitorFilter}\nYou'll be notified immediately when a line matches.`, spawnWorktreePath) }],
-				details: { sessionId: id, backgroundId: id, mode: "monitor", monitorFilter, background: true, spawnAgent, spawnMode, spawnWorktreePath },
+				content: [{ type: "text", text: appendWorktreeNotice(`Monitor started in background (id: ${id}).\nStrategy: ${compiledMonitor.compiled.publicConfig.strategy ?? "stream"}\nTriggers: ${compiledMonitor.compiled.publicConfig.triggers.map((trigger) => trigger.id).join(", ")}\nYou'll be notified when a trigger emits an event.`, spawnWorktreePath) }],
+				details: { sessionId: id, backgroundId: id, mode: "monitor", monitor: compiledMonitor.compiled.publicConfig, background: true, spawnAgent, spawnMode, spawnWorktreePath },
 			};
 		}
 
@@ -646,11 +953,15 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 				attach,
 				listBackground,
 				dismissBackground,
+				monitorEvents,
+				monitorSessionId,
+				monitorEventLimit,
+				monitorEventOffset,
 				handsFree,
 				handoffPreview,
 				handoffSnapshot,
 				timeout,
-				monitorFilter,
+				monitor,
 			} = params as ToolParams;
 
 			const hasStructuredInput = inputKeys?.length || inputHex?.length || inputPaste;
@@ -664,10 +975,55 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 					isError: true,
 				};
 			}
-			if (spawn && (sessionId || attach || listBackground || dismissBackground)) {
+			if (spawn && (sessionId || attach || listBackground || dismissBackground || monitorEvents)) {
 				return {
 					content: [{ type: "text", text: "'spawn' is only valid when starting a new session." }],
 					isError: true,
+				};
+			}
+
+			if ((params as { monitorFilter?: unknown }).monitorFilter !== undefined) {
+				return {
+					content: [{ type: "text", text: "monitorFilter was removed. Use mode='monitor' with a structured monitor object." }],
+					isError: true,
+				};
+			}
+
+			if (monitorEvents) {
+				const targetMonitorSessionId = monitorSessionId ?? sessionId;
+				if (!targetMonitorSessionId) {
+					return {
+						content: [{ type: "text", text: "monitorEvents requires monitorSessionId (or sessionId)." }],
+						isError: true,
+					};
+				}
+
+				const history = coordinator.getMonitorEvents(targetMonitorSessionId, {
+					limit: monitorEventLimit,
+					offset: monitorEventOffset,
+				});
+				if (history.total === 0) {
+					return {
+						content: [{ type: "text", text: `No monitor events for session ${targetMonitorSessionId}.` }],
+						details: { sessionId: targetMonitorSessionId, events: [], total: 0, limit: history.limit, offset: history.offset },
+					};
+				}
+
+				const lines = history.events.map((event) =>
+					`#${event.eventId} [${event.strategy}/${event.triggerId}] ${event.timestamp} :: ${event.matchedText}`,
+				);
+				return {
+					content: [{
+						type: "text",
+						text: `Monitor events for ${targetMonitorSessionId} (${history.events.length}/${history.total}, offset ${history.offset}):\n${lines.join("\n")}`,
+					}],
+					details: {
+						sessionId: targetMonitorSessionId,
+						events: history.events,
+						total: history.total,
+						limit: history.limit,
+						offset: history.offset,
+					},
 				};
 			}
 
@@ -1029,6 +1385,7 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 
 				for (const tid of targetIds) {
 					coordinator.disposeMonitor(tid);
+					coordinator.clearMonitorEvents(tid);
 					sessionManager.unregisterActive(tid, false);
 					sessionManager.remove(tid);
 				}
@@ -1055,7 +1412,7 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 				reason,
 				mode,
 				background,
-				monitorFilter,
+				monitor,
 				handsFree,
 				handoffPreview,
 				handoffSnapshot,
@@ -1221,6 +1578,7 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 
 			for (const tid of targetIds) {
 				coordinator.disposeMonitor(tid);
+				coordinator.clearMonitorEvents(tid);
 				sessionManager.unregisterActive(tid, false);
 				sessionManager.remove(tid);
 			}

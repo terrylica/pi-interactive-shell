@@ -59,8 +59,20 @@ describe("notification utilities", () => {
 	});
 
 	it("formats monitor event notifications", () => {
-		const text = buildMonitorEventNotification("calm-reef", "ERROR: failed", "ERROR: failed to compile");
-		expect(text).toContain("Monitor Event (calm-reef)");
+		const text = buildMonitorEventNotification({
+			sessionId: "calm-reef",
+			eventId: 3,
+			timestamp: "2026-04-11T14:00:00.000Z",
+			strategy: "stream",
+			triggerId: "error",
+			eventType: "error",
+			matchedText: "ERROR: failed",
+			lineOrDiff: "ERROR: failed to compile",
+			stream: "pty",
+		});
+		expect(text).toContain("Monitor Event (calm-reef) #3");
+		expect(text).toContain("Strategy: stream");
+		expect(text).toContain("Trigger: error");
 		expect(text).toContain("Matched: ERROR: failed");
 		expect(text).toContain("Line: ERROR: failed to compile");
 	});

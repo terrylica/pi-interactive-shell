@@ -24,7 +24,7 @@ Pi has two ways to delegate work to other AI coding agents:
 
 **Dispatch subagents** also use `interactive_shell` but with `mode: "dispatch"`. The agent fires the session and moves on. When the session completes, the agent is woken up via `triggerTurn` with the output in context. Add `background: true` for headless execution (no overlay).
 
-**Monitor mode** (`mode: "monitor"`) runs headless and event-driven. It wakes the agent only when a cleaned output line matches `monitorFilter`, so there is no polling loop.
+**Monitor mode** (`mode: "monitor"`) runs headless and event-driven. It wakes the agent on structured monitor trigger events (stream or poll-diff), so there is no polling loop.
 
 **Background subagents** run invisibly via the `subagent` tool. Pi-only, but captures full output and supports parallel execution.
 
@@ -125,19 +125,30 @@ interactive_shell({
 ```
 
 ### Monitor (Event-Driven, Headless)
-Run a background process and wake the agent only when output lines match `monitorFilter`.
+Run a background process and wake the agent on structured monitor triggers.
 
 ```typescript
 interactive_shell({
   command: 'npm test --watch',
   mode: "monitor",
-  monitorFilter: "FAIL"
+  monitor: {
+    strategy: "stream",
+    triggers: [
+      { id: "failed", literal: "FAIL" },
+      { id: "error", regex: "/error|warn/i" }
+    ],
+    throttle: { dedupeExactLine: true }
+  }
 })
 
 interactive_shell({
-  command: 'npm run dev',
+  command: 'curl -sf http://localhost:3000/health',
   mode: "monitor",
-  monitorFilter: "/error|warn/i"
+  monitor: {
+    strategy: "poll-diff",
+    triggers: [{ id: "changed", regex: "/./" }],
+    poll: { intervalMs: 5000 }
+  }
 })
 ```
 
@@ -499,7 +510,11 @@ interactive_shell({ dismissBackground: true })               // all
 interactive_shell({ dismissBackground: "calm-reef" })        // specific
 
 // Start an event-driven monitor session (headless)
-interactive_shell({ command: 'npm test --watch', mode: "monitor", monitorFilter: "FAIL" })
+interactive_shell({
+  command: 'npm test --watch',
+  mode: "monitor",
+  monitor: { strategy: "stream", triggers: [{ id: "failed", literal: "FAIL" }] }
+})
 ```
 
 ## Local Testing Hygiene
@@ -561,7 +576,11 @@ interactive_shell({
 interactive_shell({
   command: 'npm run dev',
   mode: "monitor",
-  monitorFilter: "/error|warn/i",
+  monitor: {
+    strategy: "stream",
+    triggers: [{ id: "warn", regex: "/error|warn/i" }],
+    persistence: { stopAfterFirstEvent: false }
+  },
   reason: "Wake me on server warnings"
 })
 ```

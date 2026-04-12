@@ -2,10 +2,27 @@ import { stripVTControlCharacters } from "node:util";
 import type { PtyTerminalSession } from "./pty-session.js";
 import type { InteractiveShellConfig } from "./config.js";
 
-/** Output line that matched a monitor filter. */
 export interface MonitorMatchInfo {
-	line: string;
+	strategy: "stream" | "poll-diff";
+	triggerId: string;
+	eventType: string;
 	matchedText: string;
+	lineOrDiff: string;
+	stream: "pty";
+}
+
+export interface MonitorTriggerMatcher {
+	id: string;
+	cooldownMs?: number;
+	match: (input: string) => string | undefined;
+}
+
+export interface MonitorRuntimeConfig {
+	strategy: "stream" | "poll-diff";
+	triggers: MonitorTriggerMatcher[];
+	pollIntervalMs: number;
+	dedupeExactLine: boolean;
+	cooldownMs?: number;
 }
 
 /** Runtime options for monitoring a headless dispatch session. */
@@ -14,8 +31,8 @@ export interface HeadlessMonitorOptions {
 	quietThreshold: number;
 	gracePeriod?: number;
 	timeout?: number;
-	monitorFilter?: RegExp;
-	onMonitorEvent?: (event: MonitorMatchInfo) => void;
+	monitor?: MonitorRuntimeConfig;
+	onMonitorEvent?: (event: MonitorMatchInfo) => void | Promise<void>;
 	/** Original session start time in ms since epoch, preserved when a foreground session moves headless. */
 	startedAt?: number;
 }
@@ -38,12 +55,18 @@ export class HeadlessDispatchMonitor {
 	private _disposed = false;
 	private quietTimer: ReturnType<typeof setTimeout> | null = null;
 	private timeoutTimer: ReturnType<typeof setTimeout> | null = null;
+	private pollTimer: ReturnType<typeof setInterval> | null = null;
+	private pollInFlight = false;
+	private pollInitialized = false;
+	private lastPollSnapshot = "";
+	private pollReadOffset = 0;
 	private result: HeadlessCompletionInfo | undefined;
 	private completeCallbacks: Array<() => void> = [];
 	private unsubData: (() => void) | null = null;
 	private unsubExit: (() => void) | null = null;
 	private monitorLineBuffer = "";
-	private emittedMonitorLines = new Set<string>();
+	private emittedMonitorKeys = new Set<string>();
+	private triggerLastEmitAt = new Map<string, number>();
 
 	get disposed(): boolean { return this._disposed; }
 
@@ -66,6 +89,10 @@ export class HeadlessDispatchMonitor {
 			}, options.timeout);
 		}
 
+		if (options.monitor?.strategy === "poll-diff") {
+			this.startPollTimer();
+		}
+
 		if (session.exited) {
 			queueMicrotask(() => {
 				if (!this._disposed) {
@@ -82,7 +109,7 @@ export class HeadlessDispatchMonitor {
 			if (this.options.autoExitOnQuiet && visible.trim().length > 0) {
 				this.resetQuietTimer();
 			}
-			if (this.options.monitorFilter && this.options.onMonitorEvent) {
+			if (this.options.monitor?.strategy === "stream" && this.options.onMonitorEvent) {
 				this.processMonitorData(visible, false);
 			}
 		});
@@ -112,21 +139,118 @@ export class HeadlessDispatchMonitor {
 
 		for (const line of parts) {
 			if (!line) continue;
-			const pattern = this.options.monitorFilter;
-			if (!pattern) continue;
-			pattern.lastIndex = 0;
-			const match = pattern.exec(line);
-			if (!match) continue;
-			if (this.emittedMonitorLines.has(line)) continue;
-			this.emittedMonitorLines.add(line);
-			try {
-				this.options.onMonitorEvent?.({
-					line,
-					matchedText: match[0],
-				});
-			} catch (error) {
-				console.error("interactive-shell: monitor event callback error:", error);
+			this.emitStreamMatches(line);
+		}
+	}
+
+	private emitStreamMatches(line: string): void {
+		const monitor = this.options.monitor;
+		if (!monitor || monitor.strategy !== "stream") return;
+		for (const trigger of monitor.triggers) {
+			const matchedText = trigger.match(line);
+			if (!matchedText) continue;
+			if (!this.canEmitTrigger(trigger.id, trigger.cooldownMs)) continue;
+			if (!this.shouldEmitUnique(trigger.id, line)) continue;
+			this.emitMonitorEvent({
+				strategy: "stream",
+				triggerId: trigger.id,
+				eventType: trigger.id,
+				matchedText,
+				lineOrDiff: line,
+				stream: "pty",
+			});
+		}
+	}
+
+	private startPollTimer(): void {
+		const monitor = this.options.monitor;
+		if (!monitor || monitor.strategy !== "poll-diff") return;
+		const intervalMs = Math.max(250, Math.trunc(monitor.pollIntervalMs || 5000));
+		this.pollTimer = setInterval(() => {
+			void this.processPollTick();
+		}, intervalMs);
+	}
+
+	private stopPollTimer(): void {
+		if (!this.pollTimer) return;
+		clearInterval(this.pollTimer);
+		this.pollTimer = null;
+	}
+
+	private async processPollTick(): Promise<void> {
+		if (this._disposed || this.pollInFlight) return;
+		const monitor = this.options.monitor;
+		if (!monitor || monitor.strategy !== "poll-diff") return;
+		this.pollInFlight = true;
+		try {
+			const raw = this.session.getRawStream({ sinceLast: false, stripAnsi: true });
+			if (this.pollReadOffset > raw.length) {
+				this.pollReadOffset = raw.length;
 			}
+			const sample = normalizeMonitorSnapshot(raw.slice(this.pollReadOffset));
+			this.pollReadOffset = raw.length;
+			if (!this.pollInitialized) {
+				this.lastPollSnapshot = sample;
+				this.pollInitialized = true;
+				return;
+			}
+			if (sample === this.lastPollSnapshot) return;
+			const previous = this.lastPollSnapshot;
+			this.lastPollSnapshot = sample;
+			const diffSummary = summarizeDiff(previous, sample);
+
+			for (const trigger of monitor.triggers) {
+				const matchedText = trigger.match(sample);
+				if (!matchedText) continue;
+				if (!this.canEmitTrigger(trigger.id, trigger.cooldownMs)) continue;
+				if (!this.shouldEmitUnique(trigger.id, diffSummary)) continue;
+				this.emitMonitorEvent({
+					strategy: "poll-diff",
+					triggerId: trigger.id,
+					eventType: trigger.id,
+					matchedText,
+					lineOrDiff: diffSummary,
+					stream: "pty",
+				});
+			}
+		} catch (error) {
+			console.error("interactive-shell: poll-diff tick error:", error);
+		} finally {
+			this.pollInFlight = false;
+		}
+	}
+
+	private shouldEmitUnique(triggerId: string, lineOrDiff: string): boolean {
+		const monitor = this.options.monitor;
+		if (!monitor || monitor.dedupeExactLine === false) return true;
+		const key = `${triggerId}\u0000${lineOrDiff}`;
+		if (this.emittedMonitorKeys.has(key)) return false;
+		this.emittedMonitorKeys.add(key);
+		return true;
+	}
+
+	private canEmitTrigger(triggerId: string, triggerCooldownMs?: number): boolean {
+		const monitor = this.options.monitor;
+		if (!monitor) return true;
+		const cooldown = triggerCooldownMs ?? monitor.cooldownMs;
+		if (!cooldown || cooldown <= 0) return true;
+		const now = Date.now();
+		const last = this.triggerLastEmitAt.get(triggerId) ?? 0;
+		if (now - last < cooldown) return false;
+		this.triggerLastEmitAt.set(triggerId, now);
+		return true;
+	}
+
+	private emitMonitorEvent(event: MonitorMatchInfo): void {
+		try {
+			const maybePromise = this.options.onMonitorEvent?.(event);
+			if (maybePromise && typeof (maybePromise as Promise<unknown>).then === "function") {
+				void (maybePromise as Promise<unknown>).catch((error) => {
+					console.error("interactive-shell: monitor event callback error:", error);
+				});
+			}
+		} catch (error) {
+			console.error("interactive-shell: monitor event callback error:", error);
 		}
 	}
 
@@ -173,11 +297,12 @@ export class HeadlessDispatchMonitor {
 
 	private handleCompletion(exitCode: number | null, signal?: number, timedOut?: boolean, cancelled?: boolean): void {
 		if (this._disposed) return;
-		if (this.options.monitorFilter && this.options.onMonitorEvent) {
+		if (this.options.monitor?.strategy === "stream" && this.options.onMonitorEvent) {
 			this.processMonitorData("", true);
 		}
 		this._disposed = true;
 		this.stopQuietTimer();
+		this.stopPollTimer();
 		if (this.timeoutTimer) { clearTimeout(this.timeoutTimer); this.timeoutTimer = null; }
 		this.unsubscribe();
 
@@ -194,11 +319,12 @@ export class HeadlessDispatchMonitor {
 
 	handleExternalCompletion(exitCode: number | null, signal?: number, completionOutput?: HeadlessCompletionInfo["completionOutput"]): void {
 		if (this._disposed) return;
-		if (this.options.monitorFilter && this.options.onMonitorEvent) {
+		if (this.options.monitor?.strategy === "stream" && this.options.onMonitorEvent) {
 			this.processMonitorData("", true);
 		}
 		this._disposed = true;
 		this.stopQuietTimer();
+		this.stopPollTimer();
 		if (this.timeoutTimer) { clearTimeout(this.timeoutTimer); this.timeoutTimer = null; }
 		this.unsubscribe();
 
@@ -236,7 +362,36 @@ export class HeadlessDispatchMonitor {
 		if (this._disposed) return;
 		this._disposed = true;
 		this.stopQuietTimer();
+		this.stopPollTimer();
 		if (this.timeoutTimer) { clearTimeout(this.timeoutTimer); this.timeoutTimer = null; }
 		this.unsubscribe();
 	}
+}
+
+function normalizeMonitorSnapshot(raw: string): string {
+	if (!raw) return "";
+	const normalizedLineEndings = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+	return normalizedLineEndings
+		.replace(/[\t ]+$/gm, "")
+		.trimEnd();
+}
+
+function summarizeDiff(previous: string, current: string): string {
+	if (previous === current) return "No change";
+	if (!previous && current) return `Output changed: now has content (${current.length} chars)`;
+	if (previous && !current) return "Output changed: now empty";
+
+	const prevLines = previous.split("\n");
+	const nextLines = current.split("\n");
+	const max = Math.max(prevLines.length, nextLines.length);
+	for (let i = 0; i < max; i++) {
+		const before = prevLines[i] ?? "";
+		const after = nextLines[i] ?? "";
+		if (before === after) continue;
+		const left = before.length > 120 ? `${before.slice(0, 117)}...` : before;
+		const right = after.length > 120 ? `${after.slice(0, 117)}...` : after;
+		return `Output changed at line ${i + 1}: "${left}" -> "${right}"`;
+	}
+
+	return `Output changed (${previous.length} chars -> ${current.length} chars)`;
 }
