@@ -32,8 +32,8 @@ async function setupHarness() {
 				spawn: {
 					defaultAgent: "pi",
 					shortcut: "alt+shift+p",
-					commands: { pi: "pi", codex: "codex", claude: "claude" },
-					defaultArgs: { pi: [], codex: [], claude: [] },
+					commands: { pi: "pi", codex: "codex", claude: "claude", cursor: "agent" },
+					defaultArgs: { pi: [], codex: [], claude: [], cursor: [] },
 					worktree: false,
 					worktreeBaseDir: undefined,
 				},

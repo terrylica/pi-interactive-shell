@@ -58,25 +58,27 @@ Pi is the default because it's already available, has the same capabilities, and
 
 ## Structured Spawn and `/spawn`
 
-For Pi, Codex, and Claude, prefer structured `spawn` params when you want the extension's shared resolver, config defaults, native startup prompt forms, or Pi-only fork/worktree behavior:
+For Pi, Codex, Claude, and Cursor, prefer structured `spawn` params when you want the extension's shared resolver, config defaults, native startup prompt forms, or Pi-only fork/worktree behavior:
 
 ```typescript
 interactive_shell({ spawn: { agent: "pi" }, mode: "interactive" })
 interactive_shell({ spawn: { agent: "codex" }, mode: "dispatch" })
+interactive_shell({ spawn: { agent: "cursor", prompt: "Review the diffs" }, mode: "dispatch" })
 interactive_shell({ spawn: { agent: "claude", prompt: "Review the diffs" }, mode: "dispatch" })
 interactive_shell({ spawn: { agent: "claude", worktree: true }, mode: "hands-free" })
 interactive_shell({ spawn: { mode: "fork" }, mode: "interactive" }) // Pi-only
 ```
 
-Structured `spawn` uses the same resolver and defaults as the user-facing `/spawn` command. Raw `command` is still the right choice for arbitrary CLIs and custom launch strings.
+Structured `spawn` uses the same resolver and defaults as the user-facing `/spawn` command. Raw `command` is still the right choice for arbitrary CLIs and custom launch strings. Cursor structured spawn defaults to `--model composer-2-fast`, which explicitly selects Composer 2 Fast.
 
 For Codex image or design work, Codex can invoke `gpt-image-2` directly from the prompt. Natural language is usually enough, and `$imagegen` forces the image-generation tool when you need it. Attach references with `-i` for edits and iterations. See the bundled `codex-cli` skill for concrete examples.
 
-For users in chat, `/spawn` now supports the configured default agent plus explicit overrides like `/spawn codex`, `/spawn claude`, `/spawn pi`, `/spawn fork`, and `/spawn pi fork`. Add `--worktree` to run in a separate git worktree.
+For users in chat, `/spawn` now supports the configured default agent plus explicit overrides like `/spawn codex`, `/spawn cursor`, `/spawn claude`, `/spawn pi`, `/spawn fork`, and `/spawn pi fork`. Add `--worktree` to run in a separate git worktree.
 
 Quoted prompt text plus `--hands-free` or `--dispatch` turns `/spawn` into a monitored delegated run instead of a plain interactive overlay:
 
 ```bash
+/spawn cursor "review the diffs" --dispatch
 /spawn claude "review the diffs" --dispatch
 /spawn codex "fix the failing tests" --hands-free
 /spawn pi fork "continue from here" --dispatch
@@ -236,7 +238,7 @@ For back-and-forth interaction, leave auto-exit disabled (the default). Query st
 
 ```typescript
 interactive_shell({
-  command: 'cursor-agent -f',
+  spawn: { agent: "cursor" },
   mode: "hands-free",
   reason: "Interactive refactoring"
 })

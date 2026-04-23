@@ -4,11 +4,16 @@ All notable changes to the `pi-interactive-shell` extension will be documented i
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-04-23
+
 ### Changed
 - Bundled runtime skills now live under `skills/`, with only the canonical `pi-interactive-shell` skill auto-registered. The Codex workflow skills remain packaged under `examples/skills/` as opt-in copies alongside the example prompt templates.
 - Codex docs now include `gpt-image-2` guidance across the optional `codex-cli` example skill plus the shared README and interactive-shell skill, covering natural-language prompting, `$imagegen`, and `-i` reference-image workflows.
 - Replaced the legacy `@sinclair/typebox` runtime dependency with `typebox`.
 - Upgraded `zigpty` from `^0.0.6` to `^0.1.6` to pick up newer PTY prebuilds, including the Linux x64 path affected by the reported SIGILL crash.
+- Added first-class Cursor spawn support (`spawn.agent: "cursor"` and `/spawn cursor`) mapped to the Cursor CLI `agent` executable by default, with default args set to `--model composer-2-fast`, fresh/worktree support, and Pi-only fork preserved.
+- Added an optional `examples/skills/cursor-cli` reference skill and updated spawn docs/tool help/tests so Cursor is treated as a peer to Pi/Codex/Claude in structured spawn flows.
+- Updated the optional `codex-cli` example skill to prefer `gpt-5.5` for Codex CLI work.
 
 ### Fixed
 - Migrated the interactive-shell tool schema from `@sinclair/typebox` to `typebox` 1.x so packaged installs follow Pi's current extension runtime contract.

@@ -5,10 +5,10 @@ type OverlayOptionsCapture = { command: string; reason?: string; cwd?: string } 
 type SpawnConfigOverrides = {
 	focusShortcut?: string;
 	spawn?: {
-		defaultAgent?: "pi" | "codex" | "claude";
+		defaultAgent?: "pi" | "codex" | "claude" | "cursor";
 		shortcut?: string;
-		commands?: Partial<Record<"pi" | "codex" | "claude", string>>;
-		defaultArgs?: Partial<Record<"pi" | "codex" | "claude", string[]>>;
+		commands?: Partial<Record<"pi" | "codex" | "claude" | "cursor", string>>;
+		defaultArgs?: Partial<Record<"pi" | "codex" | "claude" | "cursor", string[]>>;
 		worktree?: boolean;
 		worktreeBaseDir?: string;
 	};
@@ -43,11 +43,13 @@ async function setupExtensionHarness(configOverrides: SpawnConfigOverrides = {})
 						pi: configOverrides.spawn?.commands?.pi ?? "pi",
 						codex: configOverrides.spawn?.commands?.codex ?? "codex",
 						claude: configOverrides.spawn?.commands?.claude ?? "claude",
+						cursor: configOverrides.spawn?.commands?.cursor ?? "agent",
 					},
 					defaultArgs: {
 						pi: configOverrides.spawn?.defaultArgs?.pi ?? [],
 						codex: configOverrides.spawn?.defaultArgs?.codex ?? [],
 						claude: configOverrides.spawn?.defaultArgs?.claude ?? [],
+						cursor: configOverrides.spawn?.defaultArgs?.cursor ?? ["--model", "composer-2-fast"],
 					},
 					worktree: configOverrides.spawn?.worktree ?? false,
 					worktreeBaseDir: configOverrides.spawn?.worktreeBaseDir,
@@ -183,6 +185,18 @@ describe("/spawn command, shortcut, and tool spawn", () => {
 		});
 	});
 
+	it("/spawn cursor resolves through the cursor command mapping", async () => {
+		const harness = await setupExtensionHarness({ spawn: { defaultAgent: "pi" } });
+		const spawn = harness.commands.get("spawn");
+		expect(spawn).toBeDefined();
+
+		await spawn!.handler("cursor", harness.ctx as any);
+		expect(harness.getLastOverlayOptions()).toMatchObject({
+			command: "agent --model composer-2-fast",
+			reason: "spawn cursor (fresh session)",
+		});
+	});
+
 	it("/spawn supports monitored prompt-bearing launches with the shared resolver", async () => {
 		const harness = await setupExtensionHarness({ spawn: { defaultAgent: "pi" } });
 		const spawn = harness.commands.get("spawn");
@@ -270,6 +284,23 @@ describe("/spawn command, shortcut, and tool spawn", () => {
 		expect(harness.getLastOverlayOptions()).toMatchObject({
 			command: "claude 'review the diffs'",
 			reason: "spawn claude (fresh session)",
+		});
+		expect(result.content[0].text).toContain("Session dispatched");
+	});
+
+	it("interactive_shell structured spawn launches cursor prompts through the agent executable", async () => {
+		const harness = await setupExtensionHarness();
+		const tool = harness.getTool();
+		expect(tool).toBeTruthy();
+
+		const result = await tool!.execute("call-1", {
+			spawn: { agent: "cursor", prompt: "review the diffs" },
+			mode: "dispatch",
+		}, undefined, undefined, harness.ctx as any);
+
+		expect(harness.getLastOverlayOptions()).toMatchObject({
+			command: "agent --model composer-2-fast 'review the diffs'",
+			reason: "spawn cursor (fresh session)",
 		});
 		expect(result.content[0].text).toContain("Session dispatched");
 	});

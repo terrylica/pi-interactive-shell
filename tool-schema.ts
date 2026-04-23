@@ -5,7 +5,7 @@ export const TOOL_LABEL = "Interactive Shell";
 
 export const TOOL_DESCRIPTION = `Run an interactive CLI coding agent in an overlay.
 
-Use this ONLY for delegating tasks to other AI coding agents (Claude Code, Gemini CLI, Codex, etc.) that have their own TUI and benefit from user interaction.
+Use this ONLY for delegating tasks to other AI coding agents (Claude Code, Cursor CLI, Gemini CLI, Codex, etc.) that have their own TUI and benefit from user interaction.
 
 DO NOT use this for regular bash commands - use the standard bash tool instead.
 
@@ -124,12 +124,13 @@ DISMISS BACKGROUND SESSIONS:
 
 When using raw \`command\`, this tool does NOT inject prompts for you.
 If you want to start with a prompt, include it in the command using the CLI's own prompt form.
-Structured \`spawn\` also supports a \`prompt\` field for Pi, Codex, and Claude using their native startup prompt forms.
+Structured \`spawn\` also supports a \`prompt\` field for Pi, Codex, Claude, and Cursor using their native startup prompt forms.
 
 Examples:
 - pi "Scan the current codebase"
 - claude "Check the current directory and summarize"
 - interactive_shell({ spawn: { agent: "codex" }, mode: "dispatch" })
+- interactive_shell({ spawn: { agent: "cursor", prompt: "Review the diffs" }, mode: "dispatch" })
 - interactive_shell({ spawn: { agent: "claude", prompt: "Review the diffs" }, mode: "dispatch" })
 - interactive_shell({ spawn: { mode: "fork" } }) // pi-only fork of the current persisted session
 - gemini (interactive, idle)
@@ -148,6 +149,7 @@ export const toolParameters = Type.Object({
 				Type.Literal("pi"),
 				Type.Literal("codex"),
 				Type.Literal("claude"),
+				Type.Literal("cursor"),
 			], {
 				description: "Spawn agent to launch. Defaults to the configured spawn.defaultAgent.",
 			})),
@@ -161,10 +163,10 @@ export const toolParameters = Type.Object({
 				description: "Launch in a separate git worktree. Defaults to spawn.worktree from config.",
 			})),
 			prompt: Type.Optional(Type.String({
-				description: "Optional startup prompt for pi, codex, or claude. Uses each CLI's native prompt-bearing startup form.",
+				description: "Optional startup prompt for pi, codex, claude, or cursor. Uses each CLI's native prompt-bearing startup form.",
 			})),
 		}, {
-			description: "Structured spawn request for pi, codex, or claude. Use this instead of building the command string manually when you want the extension's spawn defaults, Pi-only fork behavior, worktree support, or native startup prompts.",
+			description: "Structured spawn request for pi, codex, claude, or cursor. Use this instead of building the command string manually when you want the extension's spawn defaults, Pi-only fork behavior, worktree support, or native startup prompts.",
 		}),
 	),
 	sessionId: Type.Optional(
@@ -423,7 +425,7 @@ export const toolParameters = Type.Object({
 /** Parsed tool parameters type */
 export interface ToolParams {
 	command?: string;
-	spawn?: { agent?: "pi" | "codex" | "claude"; mode?: "fresh" | "fork"; worktree?: boolean; prompt?: string };
+	spawn?: { agent?: "pi" | "codex" | "claude" | "cursor"; mode?: "fresh" | "fork"; worktree?: boolean; prompt?: string };
 	sessionId?: string;
 	kill?: boolean;
 	outputLines?: number;

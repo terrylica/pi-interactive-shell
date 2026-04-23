@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir } from "@mariozechner/pi-coding-agent";
 
-export type SpawnAgent = "pi" | "codex" | "claude";
+export type SpawnAgent = "pi" | "codex" | "claude" | "cursor";
 
 export interface SpawnConfig {
 	defaultAgent: SpawnAgent;
@@ -47,11 +47,13 @@ const DEFAULT_SPAWN_CONFIG: SpawnConfig = {
 		pi: "pi",
 		codex: "codex",
 		claude: "claude",
+		cursor: "agent",
 	},
 	defaultArgs: {
 		pi: [],
 		codex: [],
 		claude: [],
+		cursor: ["--model", "composer-2-fast"],
 	},
 	worktree: false,
 	worktreeBaseDir: undefined,
@@ -191,12 +193,14 @@ function mergeSpawnConfig(globalValue: unknown, projectValue: unknown): SpawnCon
 		pi: resolveCommand(projectCommands?.pi ?? globalCommands?.pi, DEFAULT_SPAWN_CONFIG.commands.pi),
 		codex: resolveCommand(projectCommands?.codex ?? globalCommands?.codex, DEFAULT_SPAWN_CONFIG.commands.codex),
 		claude: resolveCommand(projectCommands?.claude ?? globalCommands?.claude, DEFAULT_SPAWN_CONFIG.commands.claude),
+		cursor: resolveCommand(projectCommands?.cursor ?? globalCommands?.cursor, DEFAULT_SPAWN_CONFIG.commands.cursor),
 	};
 
 	const mergedDefaultArgs = {
 		pi: resolveStringArray(projectArgs?.pi ?? globalArgs?.pi, DEFAULT_SPAWN_CONFIG.defaultArgs.pi),
 		codex: resolveStringArray(projectArgs?.codex ?? globalArgs?.codex, DEFAULT_SPAWN_CONFIG.defaultArgs.codex),
 		claude: resolveStringArray(projectArgs?.claude ?? globalArgs?.claude, DEFAULT_SPAWN_CONFIG.defaultArgs.claude),
+		cursor: resolveStringArray(projectArgs?.cursor ?? globalArgs?.cursor, DEFAULT_SPAWN_CONFIG.defaultArgs.cursor),
 	};
 
 	return {
@@ -214,7 +218,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 function resolveSpawnAgent(value: unknown, fallback: SpawnAgent): SpawnAgent {
-	return value === "pi" || value === "codex" || value === "claude" ? value : fallback;
+	return value === "pi" || value === "codex" || value === "claude" || value === "cursor" ? value : fallback;
 }
 
 function resolveCommand(value: unknown, fallback: string): string {

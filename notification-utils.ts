@@ -116,7 +116,7 @@ export function buildIdlePromptWarning(command: string, reason: string | undefin
 	if (!tasky.test(reason)) return null;
 
 	const trimmed = command.trim();
-	const binaries = ["pi", "claude", "codex", "gemini", "cursor-agent"] as const;
+	const binaries = ["pi", "claude", "codex", "gemini", "agent"] as const;
 	const bin = binaries.find((candidate) => trimmed === candidate || trimmed.startsWith(`${candidate} `));
 	if (!bin) return null;
 
@@ -174,5 +174,5 @@ function appendTailBlock(parts: string[], lines: string[] | undefined, tailLines
 }
 
 function looksLikeIdleCommand(rest: string): boolean {
-	return rest.length === 0 || /^(-{1,2}[A-Za-z0-9][A-Za-z0-9-]*(?:=[^\s]+)?\s*)+$/.test(rest);
+	return rest.length === 0 || /^(-{1,2}[A-Za-z0-9][A-Za-z0-9-]*(?:=[^\s]+|\s+[^\s-][^\s]*)?\s*)+$/.test(rest);
 }

@@ -1074,7 +1074,7 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 		label: TOOL_LABEL,
 		description: TOOL_DESCRIPTION,
 		promptSnippet:
-			"Use this only to delegate tasks to interactive CLI coding agents (pi/claude/gemini/codex/aider). Prefer mode='dispatch' for fire-and-forget delegations. When sending slash commands or prompts to an existing session, use submit=true so the text is actually submitted.",
+			"Use this only to delegate tasks to interactive CLI coding agents (pi/claude/cursor/gemini/codex/aider). Prefer mode='dispatch' for fire-and-forget delegations. When sending slash commands or prompts to an existing session, use submit=true so the text is actually submitted.",
 		parameters: toolParameters,
 
 		async execute(_toolCallId, params, _signal, onUpdate, ctx) {
@@ -1629,11 +1629,11 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("spawn", {
-		description: "Spawn the configured default agent, pi, codex, or claude in an interactive shell overlay",
+		description: "Spawn the configured default agent, pi, codex, claude, or cursor in an interactive shell overlay",
 		handler: async (args, ctx) => {
 			const parsed = parseSpawnArgs(args);
 			if (!parsed.ok) {
-				ctx.ui.notify(`${parsed.error}\nUsage: /spawn [pi|codex|claude] [fresh|fork] [--worktree] [\"prompt\" --hands-free|--dispatch]`, "error");
+				ctx.ui.notify(`${parsed.error}\nUsage: /spawn [pi|codex|claude|cursor] [fresh|fork] [--worktree] [\"prompt\" --hands-free|--dispatch]`, "error");
 				return;
 			}
 			if (parsed.parsed.monitorMode) {

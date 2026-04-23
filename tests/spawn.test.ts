@@ -9,8 +9,8 @@ const config: InteractiveShellConfig = {
 	spawn: {
 		defaultAgent: "pi",
 		shortcut: "alt+shift+p",
-		commands: { pi: "pi", codex: "codex", claude: "claude" },
-		defaultArgs: { pi: [], codex: ["-c", 'model_reasoning_effort="high"'], claude: [] },
+		commands: { pi: "pi", codex: "codex", claude: "claude", cursor: "agent" },
+		defaultArgs: { pi: [], codex: ["-c", 'model_reasoning_effort="high"'], claude: [], cursor: ["--model", "composer-2-fast"] },
 		worktree: false,
 		worktreeBaseDir: "/tmp/worktrees",
 	},
@@ -54,6 +54,13 @@ describe("spawn helpers", () => {
 			parsed: {
 				request: { agent: "codex", mode: "fork", worktree: true, prompt: undefined },
 				monitorMode: undefined,
+			},
+		});
+		expect(parseSpawnArgs('cursor "review the diffs" --dispatch')).toEqual({
+			ok: true,
+			parsed: {
+				request: { agent: "cursor", mode: undefined, worktree: undefined, prompt: "review the diffs" },
+				monitorMode: "dispatch",
 			},
 		});
 		expect(parseSpawnArgs('"fix the failing tests" --hands-free')).toEqual({
@@ -118,6 +125,17 @@ describe("spawn helpers", () => {
 				command: "claude 'review the diffs'",
 				cwd: "/tmp/project",
 				reason: "spawn claude (fresh session)",
+				worktreePath: undefined,
+			},
+		});
+		expect(resolveSpawn(config, "/tmp/project", { agent: "cursor", prompt: "review the diffs" }, () => "/tmp/project/session.jsonl")).toEqual({
+			ok: true,
+			spawn: {
+				agent: "cursor",
+				mode: "fresh",
+				command: "agent --model composer-2-fast 'review the diffs'",
+				cwd: "/tmp/project",
+				reason: "spawn cursor (fresh session)",
 				worktreePath: undefined,
 			},
 		});

@@ -57,7 +57,7 @@ The examples below show agent-side tool calls. They are not chat commands for en
 
 ### Structured Spawn
 
-For Pi, Codex, and Claude, the agent can use structured spawn params instead of building command strings by hand:
+For Pi, Codex, Claude, and Cursor, the agent can use structured spawn params instead of building command strings by hand:
 
 ```typescript
 // User says: "Spawn pi so I can edit files interactively"
@@ -65,6 +65,9 @@ interactive_shell({ spawn: { agent: "pi" }, mode: "interactive" })
 
 // User says: "Delegate this refactor to codex and notify me when it's done"
 interactive_shell({ spawn: { agent: "codex" }, mode: "dispatch" })
+
+// User says: "Ask cursor to review the diffs in dispatch mode"
+interactive_shell({ spawn: { agent: "cursor", prompt: "Review the diffs" }, mode: "dispatch" })
 
 // User says: "Ask claude to review the diffs in dispatch mode"
 interactive_shell({ spawn: { agent: "claude", prompt: "Review the diffs" }, mode: "dispatch" })
@@ -78,7 +81,7 @@ interactive_shell({ spawn: { mode: "fork" }, mode: "interactive" })
 
 Structured `spawn` uses the same resolver and config defaults as the user-facing `/spawn` command. Raw `command` is still supported for arbitrary CLIs and custom launch strings.
 
-For Codex image or design work, Codex can invoke `gpt-image-2` directly from the prompt. Natural language is usually enough, and `$imagegen` forces the image-generation tool when you need it. Attach references with `-i` for edits and iterations. See the bundled `codex-cli` skill for concrete examples.
+For Codex image or design work, Codex can invoke `gpt-image-2` directly from the prompt. Natural language is usually enough, and `$imagegen` forces the image-generation tool when you need it. Attach references with `-i` for edits and iterations. See the bundled `codex-cli` skill for concrete examples. For Cursor CLI-specific command references, see the optional `examples/skills/cursor-cli` skill. Cursor structured spawn defaults to `--model composer-2-fast`, which explicitly selects Cursor's Composer 2 Fast model.
 
 ### Interactive
 
@@ -363,13 +366,14 @@ interactive_shell({ dismissBackground: "calm-reef" })        // specific session
 
 Monitor sessions work the same way — they're headless background sessions that wake you on monitor events instead of completion.
 
-User can also `/spawn` to launch the configured default spawn agent, `/spawn codex`, `/spawn claude`, `/spawn pi`, `/spawn fork`, or `/spawn pi fork`. Add `--worktree` to spawn in a separate git worktree, for example `/spawn codex --worktree` or `/spawn pi fork --worktree`. Plain `/spawn claude` stays a normal interactive overlay. `fork` is Pi-only. Worktrees are left in place and the overlay will tell you where they were created. `/attach` or `/attach <id>` reattaches, and `/dismiss` or `/dismiss <id>` cleans up from the chat. The keyboard spawn shortcut is separate from `/spawn` and uses `spawn.shortcut`.
+User can also `/spawn` to launch the configured default spawn agent, `/spawn codex`, `/spawn cursor`, `/spawn claude`, `/spawn pi`, `/spawn fork`, or `/spawn pi fork`. Add `--worktree` to spawn in a separate git worktree, for example `/spawn cursor --worktree`, `/spawn codex --worktree`, or `/spawn pi fork --worktree`. Plain `/spawn cursor` stays a normal interactive overlay. `fork` is Pi-only. Worktrees are left in place and the overlay will tell you where they were created. `/attach` or `/attach <id>` reattaches, and `/dismiss` or `/dismiss <id>` cleans up from the chat. The keyboard spawn shortcut is separate from `/spawn` and uses `spawn.shortcut`.
 
 ### Prompt-Bearing `/spawn`
 
 Quoted prompt text plus `--hands-free` or `--dispatch` turns `/spawn` into a monitored delegated run instead of a plain interactive overlay. This shares the same resolver and defaults as structured `interactive_shell({ spawn: ... })`. Plain `/spawn` stays interactive. `Ctrl+G` only applies after you take over one of these monitored sessions.
 
 ```bash
+/spawn cursor "review the diffs" --dispatch
 /spawn claude "review the diffs" --dispatch
 /spawn codex "fix the failing tests" --hands-free
 /spawn pi fork "continue from here" --dispatch
@@ -407,12 +411,14 @@ Shortcut settings are pinned at startup. If you change `focusShortcut` or `spawn
     "commands": {
       "pi": "pi",
       "codex": "codex",
-      "claude": "claude"
+      "claude": "claude",
+      "cursor": "agent"
     },
     "defaultArgs": {
       "pi": [],
       "codex": [],
-      "claude": []
+      "claude": [],
+      "cursor": ["--model", "composer-2-fast"]
     },
     "worktree": false,
     "worktreeBaseDir": "../repo-worktrees"
@@ -445,8 +451,8 @@ Shortcut settings are pinned at startup. If you change `focusShortcut` or `spawn
 | `focusShortcut` | "alt+shift+f" | Toggle focus between overlay and main chat |
 | `spawn.defaultAgent` | "pi" | Configured default spawn agent for `/spawn`, the spawn shortcut, and agent-side structured spawn |
 | `spawn.shortcut` | "alt+shift+p" | Keyboard shortcut that launches the configured default spawn agent |
-| `spawn.commands.<agent>` | `pi` / `codex` / `claude` | Executable or path override per spawn agent |
-| `spawn.defaultArgs.<agent>` | `[]` | Extra default CLI args per spawn agent |
+| `spawn.commands.<agent>` | `pi` / `codex` / `claude` / `agent` (cursor) | Executable or path override per spawn agent |
+| `spawn.defaultArgs.<agent>` | `[]` (Cursor defaults to `--model composer-2-fast`) | Extra default CLI args per spawn agent |
 | `spawn.worktree` | `false` | Launch spawns in a separate git worktree by default |
 | `spawn.worktreeBaseDir` | unset | Optional base directory for generated worktrees |
 | `scrollbackLines` | 5000 | Terminal scrollback buffer |
@@ -514,6 +520,9 @@ cp ~/.pi/agent/extensions/pi-interactive-shell/examples/prompts/*.md ~/.pi/agent
 cp -r ~/.pi/agent/extensions/pi-interactive-shell/examples/skills/codex-cli ~/.pi/agent/skills/
 cp -r ~/.pi/agent/extensions/pi-interactive-shell/examples/skills/gpt-5-4-prompting ~/.pi/agent/skills/
 cp -r ~/.pi/agent/extensions/pi-interactive-shell/examples/skills/codex-5-3-prompting ~/.pi/agent/skills/
+
+# Optional CLI reference skill
+cp -r ~/.pi/agent/extensions/pi-interactive-shell/examples/skills/cursor-cli ~/.pi/agent/skills/
 ```
 
 ### Usage

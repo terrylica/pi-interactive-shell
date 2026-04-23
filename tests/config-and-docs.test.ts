@@ -59,8 +59,10 @@ describe("config + docs parity", () => {
 		expect(config.spawn.defaultAgent).toBe("claude");
 		expect(config.spawn.shortcut).toBe("alt+shift+p");
 		expect(config.spawn.commands.codex).toBe("/opt/codex/bin/codex");
+		expect(config.spawn.commands.cursor).toBe("agent");
 		expect(config.spawn.defaultArgs.codex).toEqual(["--no-alt-screen"]);
 		expect(config.spawn.defaultArgs.claude).toEqual(["--allowedTools", "Bash"]);
+		expect(config.spawn.defaultArgs.cursor).toEqual(["--model", "composer-2-fast"]);
 		expect(config.spawn.worktree).toBe(false);
 		expect(config.spawn.worktreeBaseDir).toBe("../worktrees");
 
@@ -80,17 +82,22 @@ describe("config + docs parity", () => {
 		expect(defaults.focusShortcut).toBe("alt+shift+f");
 		expect(defaults.spawn.defaultAgent).toBe("pi");
 		expect(defaults.spawn.shortcut).toBe("alt+shift+p");
+		expect(defaults.spawn.defaultArgs.cursor).toEqual(["--model", "composer-2-fast"]);
 		expect(readme).toContain(`"focusShortcut": "${defaults.focusShortcut}"`);
 		expect(readme).toContain(`"defaultAgent": "${defaults.spawn.defaultAgent}"`);
 		expect(readme).toContain(`"shortcut": "${defaults.spawn.shortcut}"`);
 		expect(readme).toContain("Toggle focus between overlay and main chat");
 		expect(readme).toContain("configured default spawn agent");
 		expect(readme).toContain("/spawn codex");
+		expect(readme).toContain("/spawn cursor");
 		expect(readme).toContain('/spawn claude "review the diffs" --dispatch');
+		expect(readme).toContain('spawn: { agent: "cursor", prompt: "Review the diffs" }');
 		expect(readme).toContain('spawn: { agent: "claude", prompt: "Review the diffs" }');
 		expect(readme).toContain("--worktree");
 		expect(readme).toContain("Ctrl+G");
 		expect(readme).toContain("only after taking over a monitored hands-free or dispatch session");
+		expect(readme).toContain('"cursor": "agent"');
+		expect(readme).toContain('"cursor": ["--model", "composer-2-fast"]');
 		expect(readme).toContain("Alt+Shift+P");
 		expect(readme).toContain(`"handsFreeQuietThreshold": ${defaults.handsFreeQuietThreshold}`);
 		expect(readme).toContain(`"autoExitGracePeriod": ${defaults.autoExitGracePeriod}`);
@@ -102,6 +109,8 @@ describe("config + docs parity", () => {
 		expect(skill).toContain('raw `input` only types text. It does not submit the prompt.');
 		expect(toolSchema).toContain(`default: ${defaults.handsFreeQuietThreshold}ms`);
 		expect(toolSchema).toContain('submit: true');
+		expect(toolSchema).toContain('Type.Literal("cursor")');
+		expect(toolSchema).toContain('Structured \\`spawn\\` also supports a \\`prompt\\` field for Pi, Codex, Claude, and Cursor');
 		expect(toolSchema).toContain('This only types the text; it does not submit it.');
 		expect(toolSchema).toContain(`default: ${defaults.autoExitGracePeriod}ms`);
 

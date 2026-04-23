@@ -23,7 +23,7 @@ description: OpenAI Codex CLI reference. Use when running codex in interactive_s
 
 | Flag | Description |
 |------|-------------|
-| `-m, --model <model>` | Switch model (default: `gpt-5.3-codex`) |
+| `-m, --model <model>` | Switch model (prefer `gpt-5.5`) |
 | `-c <key=value>` | Override config.toml values (dotted paths, parsed as TOML) |
 | `-p, --profile <name>` | Use config profile from config.toml |
 | `-s, --sandbox <mode>` | Sandbox policy: `read-only`, `workspace-write`, `danger-full-access` |
@@ -95,7 +95,7 @@ Codex will generate the image(s), display them inline in the terminal (or save t
 Config file: `~/.codex/config.toml`
 
 Key config values (set in file or override with `-c`):
-- `model` -- model name (e.g., `gpt-5.3-codex`)
+- `model` -- model name (prefer `gpt-5.5`)
 - `model_reasoning_effort` -- `low`, `medium`, `high`, `xhigh`
 - `model_reasoning_summary` -- `detailed`, `concise`, `none`
 - `model_verbosity` -- `low`, `medium`, `high`
@@ -108,7 +108,7 @@ Define profiles for different projects/modes with `[profiles.<name>]` sections. 
 
 Do NOT pass `-s` / `--sandbox` flags. Codex's `read-only` and `workspace-write` sandbox modes apply OS-level filesystem restrictions that break basic shell operations inside the PTY -- zsh can't even create temp files for here-documents, so every write attempt fails with "operation not permitted." The interactive shell overlay already provides supervision (user watches in real-time, Ctrl+Q to kill, Ctrl+T to transfer output), making Codex's sandbox redundant.
 
-For users with a default profile configured, just run `codex "prompt"` to use those defaults -- no model or profile flags needed.
+Prefer `gpt-5.5` for Codex CLI work. For users with a default profile configured to `gpt-5.5`, just run `codex "prompt"` to use those defaults -- no model or profile flags needed.
 
 For delegated fire-and-forget runs, prefer `mode: "dispatch"` so the agent is notified automatically when Codex completes.
 

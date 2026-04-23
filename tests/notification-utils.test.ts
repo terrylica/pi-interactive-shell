@@ -100,6 +100,8 @@ describe("notification utilities", () => {
 
 	it("warns when reason implies work but command launches an idle agent", () => {
 		expect(buildIdlePromptWarning("codex", "Review the auth flow")).toContain("reason` is UI-only");
+		expect(buildIdlePromptWarning("agent --model composer-2-fast", "Review the auth flow")).toContain("reason` is UI-only");
 		expect(buildIdlePromptWarning('codex "Review the auth flow"', "Review the auth flow")).toBeNull();
+		expect(buildIdlePromptWarning('agent --model composer-2-fast "Review the auth flow"', "Review the auth flow")).toBeNull();
 	});
 });
